@@ -519,3 +519,28 @@ class NegativeClassifier(Backbone):
     # print(f"NegativeClassifier logits after dropout: {logits.shape}")
     return logits
 
+
+class ProjectionHead(nn.Module):
+    """A simple non-linear projection head for SimCLR."""
+    def __init__(self, in_dim, out_dim, hidden_dim=2048):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, out_dim),
+        )
+    def forward(self, x):
+        return self.block(x)
+    
+
+class SimCLRModel(nn.Module):
+    """The complete SimCLR model with an encoder and a projection head."""
+    def __init__(self, backbone, projection_head):
+        super().__init__()
+        self.backbone = backbone
+        self.projection_head = projection_head
+
+    def forward(self, x):
+        features = self.backbone(x)
+        projections = self.projection_head(features)
+        return projections

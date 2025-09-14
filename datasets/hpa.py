@@ -148,7 +148,8 @@ class ConfAwareHPADataset(Dataset):
     def __init__(
         self, 
         df, 
-        tfms=None,
+        base_tfms=None,
+        aug_tfms=None,
         cell_path=None,
         cell_count=16,
         cell_size=256,
@@ -159,7 +160,8 @@ class ConfAwareHPADataset(Dataset):
 
         # Store variables
         self.df = df.reset_index(drop=True)
-        self.transform = tfms
+        self.base_transform = base_tfms
+        self.aug_transform = aug_tfms
         self.cell_path = cell_path
         self.cell_count = cell_count
         self.cell_size = cell_size
@@ -175,12 +177,6 @@ class ConfAwareHPADataset(Dataset):
             self.conf_cols = ['prob_{}'.format(i) for i in range(19)]
         else:
             self.conf_df = None
-        
-        # Normalization and conversion to tensor
-        self.tensor_tfms = Compose([
-            ToTensor(),  # Converts image to PyTorch tensor (C x H x W)
-            Normalize(mean=[0.485, 0.456, 0.406, 0.406], std=[0.229, 0.224, 0.225, 0.225]),  # Normalizes each channel
-        ])
 
         self.cols = ['class{}'.format(i) for i in range(19)]  # Target label column names
 
@@ -221,8 +217,8 @@ class ConfAwareHPADataset(Dataset):
                 img = imread(path)
 
                 # Apply optional image augmentations
-                if self.transform is not None:
-                    res = self.transform(image=img)
+                if self.aug_transform is not None:
+                    res = self.aug_transform(image=img)
                     img = res['image']
 
                 # Ensure image has the correct size
@@ -230,7 +226,7 @@ class ConfAwareHPADataset(Dataset):
                     img = cv2.resize(img, (self.cell_size, self.cell_size))
 
                 # Apply tensor conversion and normalization
-                img = self.tensor_tfms(img)
+                img = self.base_transform(img)
 
                 # Store processed image and metadata
                 batch[idx, :, :, :] = img
@@ -273,14 +269,14 @@ class ConfAwareHPADataset(Dataset):
                 path = f'{self.cell_path}/{row["ID"]}_{s+1}.png'
                 img = imread(path)
 
-                if self.transform is not None:
-                    res = self.transform(image=img)
+                if self.aug_transform is not None:
+                    res = self.aug_transform(image=img)
                     img = res['image']
 
                 if not img.shape[0] == self.cell_size:
                     img = cv2.resize(img, (self.cell_size, self.cell_size))
 
-                img = self.tensor_tfms(img)
+                img = self.base_transform(img)
 
                 batch[idx, :, :, :] = img
                 label[idx] = row[self.cols].values.astype(np.float64)
@@ -421,3 +417,57 @@ class NegativeClassifierDataset(Dataset):
 
             return img, img_label
         
+
+class SimCLRDataset(Dataset):
+    NAME: str = "hpa"
+
+    def __init__(
+        self, 
+        df, 
+        base_tfms=None,
+        aug_tfms=None,
+        cell_path=None,
+        cell_size=256):
+
+        # Store variables
+        self.df = df.reset_index(drop=True)
+        self.base_transform = base_tfms
+        self.aug_transform = aug_tfms
+        self.cell_path = cell_path
+        self.cell_size = cell_size
+
+        self.cols = ['class{}'.format(i) for i in range(19)]  # Target label column names
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, index):
+        row = self.df.loc[index]
+
+        selected = random.sample([i for i in range(row['idx'])], 1)
+        selected = selected[0]
+
+        # Load and process each selected cell image
+        path = f'{self.cell_path}/{row["ID"]}_{selected + 1}.png'
+        img = imread(path)
+
+        # Apply optional image augmentations
+        res1 = self.aug_transform(image=img)
+        img1 = res1['image']
+        res2 = self.aug_transform(image=img)
+        img2 = res2['image']
+
+        # Ensure image has the correct size
+        if not img1.shape[0] == self.cell_size:
+            img1 = cv2.resize(img1, (self.cell_size, self.cell_size))
+        if not img2.shape[0] == self.cell_size:
+            img2 = cv2.resize(img2, (self.cell_size, self.cell_size))
+        
+        # Apply tensor conversion and normalization
+        img1 = self.base_transform(img1)
+        img2 = self.base_transform(img2)
+
+        return img1, img2
+
+
+  
