@@ -240,6 +240,8 @@ class Backbone(nn.Module):
 
     self.backbone = backbone
     self.stages = stages
+    self.out_dim = backbone.outplanes if hasattr(
+      backbone, 'outplanes') else backbone.num_features
 
     if not self.trainable_backbone:
       for s in stages:
@@ -321,7 +323,10 @@ class Backbone(nn.Module):
     for m in self.not_training:
       m.eval()
     return self
-
+  
+  def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.backbone(x)
+  
 
 class Classifier(Backbone):
 
@@ -521,26 +526,41 @@ class NegativeClassifier(Backbone):
 
 
 class ProjectionHead(nn.Module):
-    """A simple non-linear projection head for SimCLR."""
-    def __init__(self, in_dim, out_dim, hidden_dim=2048):
-        super().__init__()
-        self.block = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, out_dim),
-        )
-    def forward(self, x):
-        return self.block(x)
+  """A simple non-linear projection head for SimCLR."""
+  def __init__(self, in_dim, out_dim, hidden_dim=2048):
+    super().__init__()
+    self.block = nn.Sequential(
+      nn.Linear(in_dim, hidden_dim),
+      nn.ReLU(),
+      nn.Linear(hidden_dim, out_dim),
+    )
+  def forward(self, x):
+    return self.block(x)
     
 
 class SimCLRModel(nn.Module):
-    """The complete SimCLR model with an encoder and a projection head."""
-    def __init__(self, backbone, projection_head):
-        super().__init__()
-        self.backbone = backbone
-        self.projection_head = projection_head
+  """The complete SimCLR model with an encoder and a projection head."""
+  def __init__(self, backbone, projection_head):
+    super().__init__()
+    self.backbone = backbone
+    self.projection_head = projection_head
 
-    def forward(self, x):
-        features = self.backbone(x)
-        projections = self.projection_head(features)
-        return projections
+  def forward(self, x):
+    features = self.backbone(x)
+    # This is a 4D tensor, e.g., (batch_size, 2048, 7, 7)
+    feature_map = features[-1] if isinstance(features, tuple) else features
+    print(f"Feature map shape: {feature_map.shape}")
+    
+    # 1. Apply Global Average Pooling
+    pooled_features = F.adaptive_avg_pool2d(feature_map, (1, 1)) # Shape becomes (batch_size, 2048, 1, 1)
+    
+    # 2. Flatten the features into a vector
+    flattened_features = torch.flatten(pooled_features, 1) # Shape becomes (batch_size, 2048)
+
+    # Now, feed the correctly shaped 2D vector to the projection head
+    projections = self.projection_head(flattened_features)
+
+    return projections
+  
+  def parameters(self):
+    return list(self.backbone.parameters()) + list(self.projection_head.parameters())

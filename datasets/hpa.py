@@ -443,12 +443,7 @@ class SimCLRDataset(Dataset):
 
     def __getitem__(self, index):
         row = self.df.loc[index]
-
-        selected = random.sample([i for i in range(row['idx'])], 1)
-        selected = selected[0]
-
-        # Load and process each selected cell image
-        path = f'{self.cell_path}/{row["ID"]}_{selected + 1}.png'
+        path = f'{self.cell_path}/{row["ID"]}.png'
         img = imread(path)
 
         # Apply optional image augmentations

@@ -11,6 +11,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader, Sampler
 import torch.nn.functional as F
 from torchvision.transforms import Compose, ToTensor, Normalize
+from lightly.loss import NTXentLoss
 
 import albumentations as A
 
@@ -139,8 +140,8 @@ def create_train_dataloader(
 
 
 def create_optimizer(
-  model: nn.Module,
-  args: argparse.Namespace):
+  args: argparse.Namespace,
+  model: nn.Module):
    
   print(f"[ i ] Using regular optimizer.")
   optimizer = torch.optim.AdamW(
@@ -205,9 +206,9 @@ def build_simclr_model(
   print("[ i ] Building SimCLR model.")
   
   backbone = Backbone(
-    architecture=args.architecture,
+    model_name=args.architecture,
     channels=4,
-    backbone_weights=args.backbone_weights,
+    weights=args.backbone_weights,
     mode=args.mode,
     dilated=args.dilated,
     trainable_stem=args.trainable_stem,
@@ -326,7 +327,8 @@ if __name__ == '__main__':
     print(f"GPUs={GPUS_COUNT}")
     model = torch.nn.DataParallel(model)
 
-  criterion = NTXentLoss(temperature=args.temperature, device=DEVICE)
+  criterion = NTXentLoss(temperature=args.temperature)
+  criterion = criterion.to(DEVICE)
 
   #############
   # Optimizer #
@@ -384,9 +386,11 @@ if __name__ == '__main__':
     with torch.autocast(device_type=DEVICE, enabled=args.mixed_precision):
       # STEP 3: Get projections from the SimCLR model
       projections = model(images)
-      
+      z_i = projections[:args.batch_size]
+      z_j = projections[args.batch_size:]
+
       # STEP 4: Calculate the contrastive loss
-      loss = criterion(projections)
+      loss = criterion(z_i, z_j)
 
     # STEP 5: Standard backpropagation
     scaler.scale(loss).backward()
