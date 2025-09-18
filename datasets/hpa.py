@@ -462,7 +462,10 @@ class SimCLRDataset(Dataset):
         img1 = self.base_transform(img1)
         img2 = self.base_transform(img2)
 
-        return img1, img2
+        # Label
+        labels = torch.tensor(row[self.cols].values.astype(np.float64))
+
+        return ((img1, img2), labels)
 
 
   

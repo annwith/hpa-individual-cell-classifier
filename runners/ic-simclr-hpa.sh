@@ -16,7 +16,7 @@
 # Train a model to perform multilabel classification over a WSSS dataset.
 #
 
-DEBUG=0
+DEBUG=1
 PRINT_RATIO=0.1
 MONITOR_MEMORY_USAGE=true
 # WORK_DIR=/home/jumidlej/hpa-individual-cell-classifier
@@ -37,13 +37,14 @@ DEVICE='cuda:0'
 
 ## dataset region
 DATASET=hpa2nd     # HPA Single Cell Classification
-# TRAIN_CSV=$WORK_DIR/datasets/split/dino-kaggle.csv
-TRAIN_CSV=$WORK_DIR/datasets/split/dino.csv
+TRAIN_CSV=$WORK_DIR/datasets/split/dino_with_labels.csv
 DATA_DIR=$DATASETS_DIR/input/train_cell_256
 
 IMAGE_SIZE=256
-
 SAMPLER=default
+
+WEAKLY_SUPERVISED=true
+TEMPERATURE=0.07
 
 # end region
 
@@ -82,9 +83,7 @@ TRAINABLE_BONE=true
 DILATED=false
 MODE=normal
 
-# PRETRAINED_WEIGHTS=./experiments/models/resnest269-0cc87c48.pth
-# PRETRAINED_WEIGHTS=/home/unicamp/200208/dino-checkpoints/checkpoint.pth
-PRETRAINED_WEIGHTS=imagenet
+PRETRAINED_WEIGHTS=none
 
 # Training
 OPTIMIZER=adamw  # sgd,lion,lamb
@@ -94,17 +93,17 @@ WD=0.0
 WARMUP_EPOCHS=0
 WARMUP_START_FACTOR=0.01
 
-EPOCHS=100
+EPOCHS=10
 EPOCH0=0
-BATCH=64
+BATCH=2
 EVAL_BATCH=1
 ACCUMULATE_STEPS=8
 
 MIXED_PRECISION=true
 
 ## Augmentation and normalization
-NORM_MEAN=0.485,0.456,0.406,0.485
-NORM_STD=0.229,0.224,0.225,0.229
+NORM_MEAN=0.5,0.5,0.5,0.5
+NORM_STD=0.5,0.5,0.5,0.5
 AUGMENT_YAML=$WORK_DIR/configs/sin_256_final.yaml
 AUG=aug2nd
 # AUGMENT_YAML=""
@@ -132,8 +131,10 @@ train() {
 
   WANDB_TAGS="$DATASET,$ARCH,lr:$LR,wd:$WD,ls:$LABELSMOOTHING,b:$BATCH,aug:$AUG,opt:$OPTIMIZER,sampler:$SAMPLER" \
   WANDB_RUN_GROUP="$DATASET-$ARCH-dual-head" \
-    $PY scripts/hpa/train_simclr.py \
+    $PY scripts/hpa/train_simclr_ws.py \
     --device $DEVICE \
+    --weakly_supervised $WEAKLY_SUPERVISED \
+    --temperature $TEMPERATURE \
     --optimizer $OPTIMIZER \
     --lr $LR \
     --wd $WD \
@@ -175,7 +176,7 @@ train() {
 
 # region Classification Experiments
 
-EID=-simclr-1  # Experiment ID
+EID=-simclr-ws-1  # Experiment ID
 TAG=$DATASET-${ARCH}-lr${LR}-b${BATCH}-$AUG-$OPTIMIZER-eid$EID
 
 train
