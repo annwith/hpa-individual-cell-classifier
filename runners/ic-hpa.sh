@@ -19,13 +19,13 @@
 DEBUG=0
 PRINT_RATIO=0.1
 MONITOR_MEMORY_USAGE=true
-WORK_DIR=/home/jumidlej/hpa-individual-cell-classifier
+WORK_DIR=/home/jumidlej/git-projects/hpa-individual-cell-classifier
 
 ## environment region
 
 PY=python3
 PIP=pip
-WORKERS_TRAIN=10
+WORKERS_TRAIN=8
 DATASETS_DIR=/home/jumidlej/datasets
 
 export CUDA_VISIBLE_DEVICES=0
@@ -35,10 +35,10 @@ DEVICE='cuda:0'
 
 ## dataset region
 DATASET=hparanzer     # HPA Single Cell Classification
-TRAIN_CSV=$WORK_DIR/datasets/split/256_train+ext+rare.csv
+TRAIN_CSV=$WORK_DIR/datasets/split/dino-kaggle.csv
 DATA_DIR=$DATASETS_DIR/input/train_cell_256
-PERFORM_VALIDATION=true
-VAL_FOLD=0
+PERFORM_VALIDATION=false
+VAL_FOLD=5
 
 IMAGE_SIZE=256
 
@@ -85,19 +85,20 @@ MODE=normal
 CELL_LOGITS_TO_IMAGE_LOGITS=false
 
 # PRETRAINED_WEIGHTS=./experiments/models/resnest269-0cc87c48.pth
-PRETRAINED_WEIGHTS=imagenet
+# PRETRAINED_WEIGHTS=imagenet
+PRETRAINED_WEIGHTS=/home/jumidlej/simclr-models/hpa2nd-rs50-lr0.0002-b128-aug2nd-adamw-eid-simclr-1/model-e99.pth
 
 # Confidences
 IMAGE_CONF_AWARE_TRAINING=false
 CELL_CONF_AWARE_TRAINING=false
-CONF_PREDS=/home/jumidlej/predictions/pred-hparanzer-256-rs50-lr0.0002-b6-ls0-aug2nd-adamw-eid2-c16-e9-normalized.csv
+CONF_PREDS=no
 CONF_ALPHA=1.0
 CONF_GAMMA=0.5
 
 REANNOTATE_NEG_LABELS=false
 REANNOTATE_THRESHOLD=0.01
 
-CELL_CONF_AS_CELL_LABELS=true
+CELL_CONF_AS_CELL_LABELS=false
 
 # Training
 OPTIMIZER=adamw  # sgd,lion,lamb
@@ -129,7 +130,7 @@ EVAL_BATCH=1
 ACCUMULATE_STEPS=6
 
 CLASS_WEIGHT=none
-CELL_POS_WEIGHT=1
+CELL_POS_WEIGHT=10
 CELL_LOSS_WEIGHT=0.1
 
 EMA_ENABLED=false
@@ -139,7 +140,9 @@ EMA_DECAY=0.99
 
 MIXED_PRECISION=true
 
-## Augmentation
+## Augmentation and normalization
+NORM_MEAN=0.485,0.456,0.406,0.485
+NORM_STD=0.229,0.224,0.225,0.229
 AUGMENT_YAML=$WORK_DIR/configs/sin_256_final.yaml
 AUG=aug2nd
 # AUGMENT_YAML=""
@@ -203,6 +206,8 @@ train() {
     --trainable-backbone $TRAINABLE_BONE \
     --cell_logits_to_image_logits $CELL_LOGITS_TO_IMAGE_LOGITS \
     --image_size $IMAGE_SIZE \
+    --normalization_mean $NORM_MEAN \
+    --normalization_std $NORM_STD \
     --aug_yaml $AUGMENT_YAML \
     --first_epoch $EPOCH0 \
     --max_epoch $EPOCHS \
@@ -232,9 +237,8 @@ train() {
 
 # region Classification Experiments
 
-EID=cell-conf-label-2  # Experiment ID
+EID=-2nd-simclr-ws # Experiment ID
 TAG=$DATASET-${ARCH}-lr${LR}-b${BATCH}-$AUG-$OPTIMIZER-eid$EID
-# TAG=ranzer/test_r269
 
 train
 

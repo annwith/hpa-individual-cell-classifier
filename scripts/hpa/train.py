@@ -4,13 +4,17 @@ import os
 import psutil
 import numpy as np
 import pandas as pd
-from sklearn.metrics import classification_report
-import torch
-from torch.utils.data import DataLoader, Sampler
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
-import torch.nn.functional as F
-import albumentations as A
 from tqdm import tqdm
+import timm
+from sklearn.metrics import classification_report
+
+import torch
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.utils.data import DataLoader, Sampler
+import torch.nn.functional as F
+from torchvision.transforms import Compose, ToTensor, Normalize
+
+import albumentations as A
 
 import cv2
 cv2.setNumThreads(0)
@@ -20,12 +24,18 @@ from datasets.hpa import ConfAwareHPADataset
 
 import wandb
 from core.networks import *
+# import core.vision_transformer as vits
 from tools.ai import ema as ema_mod
 from tools.general.io_utils import *
 from tools.general import wandb_utils
 from tools.ai.optim_utils import *
 from tools.ai.log_utils import *
 from tools.general.time_utils import *
+
+
+def str2floatlist(arg):
+    return [float(x.strip()) for x in arg.split(',')]
+
 
 parser = argparse.ArgumentParser()
 
@@ -57,6 +67,8 @@ parser.add_argument('--trainable-stem', default=True, type=str2bool)
 parser.add_argument('--trainable-backbone', default=True, type=str2bool)
 parser.add_argument('--dilated', default=False, type=str2bool)
 parser.add_argument('--backbone_weights', default="imagenet", type=str)
+parser.add_argument("--checkpoint_key", default="teacher", type=str,
+        help='Key to use in the checkpoint (example: "teacher")')
 parser.add_argument('--cell_logits_to_image_logits', default=False, type=str2bool)
 
 # Hyperparameter
@@ -93,7 +105,9 @@ parser.add_argument('--cell_conf_as_cell_labels', default=False, type=str2bool)
 parser.add_argument('--print_ratio', default=0.1, type=float)
 parser.add_argument('--monitor_memory_usage', default=False, type=str2bool)
 
-parser.add_argument('--tag', default='', type=str)
+# Normalization and data augmentation
+parser.add_argument('--normalization_mean', default='0.485,0.456,0.406,0.406', type=str2floatlist)
+parser.add_argument('--normalization_std', default='0.229,0.224,0.225,0.225', type=str2floatlist)
 parser.add_argument('--aug_yaml', default='', type=str)
 
 # Restore training
@@ -103,6 +117,9 @@ parser.add_argument('--scheduler_restore', default=None, type=str)
 parser.add_argument('--scaler_restore', default=None, type=str)
 parser.add_argument('--train_meta_restore', default=None, type=str)
 
+# Tag
+parser.add_argument('--tag', default='', type=str)
+
 
 try:
   GPUS = os.environ["CUDA_VISIBLE_DEVICES"]
@@ -111,7 +128,6 @@ except KeyError:
   GPUS = "0"
 GPUS = GPUS.split(",")
 GPUS_COUNT = len(GPUS)
-THRESHOLDS = list(np.arange(0.10, 0.50, 0.05))
 
 
 class BalancedCellCountSampler(Sampler):
@@ -350,9 +366,14 @@ if __name__ == '__main__':
       valid_df = valid_df.sample(n=100, random_state=SEED)
 
   # Data transformations
+  base_tfms = Compose([
+    ToTensor(),  # Converts image to PyTorch tensor (C x H x W)
+    Normalize(mean=args.normalization_mean, 
+              std=args.normalization_std),  # Normalizes each channel
+  ])
   if args.aug_yaml:
     print(f"Using augmentations from {args.aug_yaml}")
-    train_tfms = get_transformations(args.aug_yaml)
+    aug_tfms = get_transformations(args.aug_yaml)
 
   # Check if training is confidence-aware
   if args.cell_conf_aware_training or args.image_conf_aware_training or args.cell_conf_as_cell_labels:
@@ -363,7 +384,8 @@ if __name__ == '__main__':
   # Train dataset
   ts = ConfAwareHPADataset(
     df=train_df,
-    tfms=train_tfms,
+    base_tfms=base_tfms,
+    aug_tfms=aug_tfms,
     cell_path=args.data_dir,
     cell_count=args.cell_count,
     cell_size=args.image_size,
@@ -377,7 +399,8 @@ if __name__ == '__main__':
   if args.validate:
     vs = ConfAwareHPADataset(
       df=valid_df,
-      tfms=None,
+      base_tfms=base_tfms,
+      aug_tfms=None,
       cell_path=args.data_dir,
       cell_count=args.cell_count,
       cell_size=args.image_size,
@@ -439,20 +462,81 @@ if __name__ == '__main__':
   print(f"[ i ] Iterations: first={step_init} logging={step_log} validation={step_val} max={step_max}")
 
   # Network
-  model = HPAClassifier(
-    args.architecture,
-    num_classes=19,
-    channels=4,
-    backbone_weights=args.backbone_weights,
-    mode=args.mode,
-    dilated=args.dilated,
-    trainable_stem=args.trainable_stem,
-    trainable_backbone=args.trainable_backbone,
-  )
+  if 'vit' in args.architecture:
+    backbone = vits.vit_small(
+      img_size=[224], 
+      patch_size=16, 
+      in_chans=4, 
+      num_classes=19,
+      drop_path_rate=0.1
+    )
+
+    if args.backbone_weights == 'imagenet':
+      print("No custom backbone provided, loading ImageNet pretrained weights.")
+      timm_model = timm.create_model(
+        "vit_small_patch16_224", pretrained=True, in_chans=3, num_classes=19)
+
+      # Get the original conv weights
+      proj = timm_model.patch_embed.proj
+      w = proj.weight.data  # shape [embed_dim, 3, 16, 16]
+
+      # Make new conv layer with 4 input channels
+      new_proj = nn.Conv2d(
+          in_channels=4,
+          out_channels=proj.out_channels,
+          kernel_size=proj.kernel_size,
+          stride=proj.stride,
+          padding=proj.padding,
+          bias=(proj.bias is not None)
+      )
+
+      # Copy pretrained weights
+      with torch.no_grad():
+          new_proj.weight[:, :3] = w  # keep RGB
+          new_proj.weight[:, 3] = w[:, 0]  # copy channel 0 (Red) into channel 4
+          if proj.bias is not None:
+              new_proj.bias.copy_(proj.bias)
+
+      # Replace layer in backbone
+      timm_model.patch_embed.proj = new_proj
+
+      state_dict = timm_model.state_dict()
+      msg = backbone.load_state_dict(state_dict, strict=False)
+      print('ImageNet pretrained weights loaded with msg: {}'.format(msg))
+
+    elif os.path.isfile(args.backbone_weights):
+      state_dict = torch.load(args.backbone_weights, map_location="cpu", weights_only=False)
+      if args.checkpoint_key is not None and args.checkpoint_key in state_dict:
+        print(f"Take key {args.checkpoint_key} in provided checkpoint dict")
+        state_dict = state_dict[args.checkpoint_key]
+      # remove `module.` prefix
+      state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+      # remove `backbone.` prefix induced by multicrop wrapper
+      state_dict = {k.replace("backbone.", ""): v for k, v in state_dict.items()}
+      msg = backbone.load_state_dict(state_dict, strict=False)
+      print('Pretrained weights found at {} and loaded with msg: {}'.format(args.backbone_weights, msg))
+    
+    
+    model = vits.ViT_MIL_Classifier(
+      backbone=backbone,
+      num_classes=19
+    )
+
+  else:
+    model = HPAClassifier(
+      args.architecture,
+      num_classes=19,
+      channels=4,
+      backbone_weights=args.backbone_weights,
+      mode=args.mode,
+      dilated=args.dilated,
+      trainable_stem=args.trainable_stem,
+      trainable_backbone=args.trainable_backbone,
+    )
+
   if args.model_restore:
     print(f"[ i ] Restoring weights from {args.model_restore}")
     model.load_state_dict(torch.load(args.model_restore), strict=True)
-  log_model("Vanilla", model, args)
 
   param_groups, param_names = model.get_parameter_groups(with_names=True)
   model.train()
@@ -602,30 +686,25 @@ if __name__ == '__main__':
     with torch.autocast(device_type=DEVICE, enabled=args.mixed_precision):
       cell_logits, image_logits = model(
         images, 
-        cnt=n_cells, 
+        n_cells, 
         cell_logits_to_image_logits=args.cell_logits_to_image_logits)
 
       if args.cell_conf_as_cell_labels:
-        # print(f"[ i ] Using cell confidence as cell labels.")
-        neg_idx = 18
-        masked_conf = torch.where(cell_labels.bool(), cell_conf, torch.zeros_like(cell_conf))
-
-        # Always keep conf for the negative class
-        masked_conf[:, neg_idx] = cell_conf[:, neg_idx]
-        
         cell_loss = F.binary_cross_entropy_with_logits(
-                                  cell_logits, masked_conf,
+                                  cell_logits, cell_conf,
                                   pos_weight=pos_weight,
+                                  reduction='none') # Per sample, per class loss
+        img_loss = F.binary_cross_entropy_with_logits(
+                                  image_logits, image_conf,
                                   reduction='none') # Per sample, per class loss
       else:
         cell_loss = F.binary_cross_entropy_with_logits(
                                   cell_logits, cell_labels,
                                   pos_weight=pos_weight,
                                   reduction='none') # Per sample, per class loss
-      
-      img_loss = F.binary_cross_entropy_with_logits(
-                                image_logits, image_labels,
-                                reduction='none') # Per sample, per class loss
+        img_loss = F.binary_cross_entropy_with_logits(
+                                  image_logits, image_labels,
+                                  reduction='none') # Per sample, per class loss
       
       weighted_cell_loss = cell_loss
       weighted_img_loss = img_loss
