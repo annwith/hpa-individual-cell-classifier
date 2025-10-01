@@ -24,7 +24,7 @@ from datasets.hpa import ConfAwareHPADataset
 
 import wandb
 from core.networks import *
-# import core.vision_transformer as vits
+import core.vision_transformer as vits
 from tools.ai import ema as ema_mod
 from tools.general.io_utils import *
 from tools.general import wandb_utils
