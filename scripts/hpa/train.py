@@ -1,5 +1,5 @@
-import argparse
 import os
+import argparse
 
 import psutil
 import numpy as np
@@ -59,7 +59,6 @@ parser.add_argument('--validate_batch_size', default=32, type=int)
 parser.add_argument('--cell_count', default=16, type=int)
 parser.add_argument('--image_size', default=512, type=int)
 
-
 # Network
 parser.add_argument('--architecture', default='resnet50', type=str)
 parser.add_argument('--mode', default='normal', type=str)  # fix
@@ -67,6 +66,8 @@ parser.add_argument('--trainable-stem', default=True, type=str2bool)
 parser.add_argument('--trainable-backbone', default=True, type=str2bool)
 parser.add_argument('--dilated', default=False, type=str2bool)
 parser.add_argument('--backbone_weights', default="imagenet", type=str)
+parser.add_argument('--is_simclr_model', default=False, type=str2bool)
+parser.add_argument('--is_dino_model', default=False, type=str2bool)
 parser.add_argument("--checkpoint_key", default="teacher", type=str,
         help='Key to use in the checkpoint (example: "teacher")')
 parser.add_argument('--cell_logits_to_image_logits', default=False, type=str2bool)
@@ -313,49 +314,9 @@ def validate_model(
         return val_loss, report_df
 
 
-if __name__ == '__main__':
-  args = parser.parse_args()
-
-  # Set global variables
-  TAG = args.tag
-  SEED = args.seed
-  set_seed(SEED)
-
-  DEVICE = args.device
-  print(
-    f"Using device: {DEVICE} ({torch.cuda.get_device_name(0) if DEVICE == 'cuda:0' else 'CPU'})")
-  if DEVICE == "cpu":
-    args.mixed_precision = False
-
-  if args.class_weight and args.class_weight != "none":
-    CLASS_WEIGHT = torch.Tensor(list(map(float, args.class_weight.split(",")))).to(DEVICE)
-  else:
-    CLASS_WEIGHT = None
-
-  SAVE_EVERY_EPOCH = True
-
-  # Positive weight for cell classification
-  pos_weight = torch.ones(19) / args.cell_pos_weight
-  pos_weight = pos_weight.to(DEVICE)
-  print(f"[ i ] Cell positive weight: {pos_weight}")
-
-  # Set up WandB
-  wb_run = wandb_utils.setup(TAG, args)
-  log_config(vars(args), TAG)
-
-  # Create directory model
-  if os.path.isdir('./experiments/models/' + TAG):
-    print(f"Model directory already exists: ./experiments/models/{TAG}")
-    raise FileExistsError(
-      f"Model directory already exists: ./experiments/models/{TAG}. "
-      "Please change the tag or remove the existing directory.")
-  
-  model_dir = create_directory('./experiments/models/' + TAG + '/')
-  model_path = model_dir + f'model.pth'
-
-  # Dataset
+def create_datasets(args: argparse.Namespace):
+  # Read CSV and split
   df = pd.read_csv(args.train_csv)
-
   train_df, valid_df = (df[df.fold != args.val_fold],
                         df[df.fold == args.val_fold])
 
@@ -376,7 +337,9 @@ if __name__ == '__main__':
     aug_tfms = get_transformations(args.aug_yaml)
 
   # Check if training is confidence-aware
-  if args.cell_conf_aware_training or args.image_conf_aware_training or args.cell_conf_as_cell_labels:
+  if args.cell_conf_aware_training or \
+      args.image_conf_aware_training or \
+      args.cell_conf_as_cell_labels:
     conf_aware_training = True
   else:
     conf_aware_training = False
@@ -395,7 +358,8 @@ if __name__ == '__main__':
     mode='train'
   )
 
-  # Valitation dataset
+  # Validation dataset
+  vs = None
   if args.validate:
     vs = ConfAwareHPADataset(
       df=valid_df,
@@ -407,7 +371,11 @@ if __name__ == '__main__':
       label_smoothing=args.label_smoothing,
       mode='valid'
     )
-  
+
+  return ts, vs
+
+
+def create_train_valid_dataloaders(args: argparse.Namespace):
   # Sampler and DataLoader
   if args.sampler == 'balanced_cell_count':
     print('[ i ] Using balanced_cell_count sampler')
@@ -442,6 +410,7 @@ if __name__ == '__main__':
       num_workers=args.num_workers, 
       pin_memory=False)
   
+  valid_loader = None
   if args.validate:
     valid_loader = DataLoader(
       dataset=vs, 
@@ -449,19 +418,12 @@ if __name__ == '__main__':
       shuffle=False,
       num_workers=args.num_workers, 
       pin_memory=False)
+  
+  return train_loader, valid_loader
 
-  train_iterator = datasets.Iterator(train_loader)
-  log_loader(train_loader, ts, check_sampler=False)
 
-  # Steps
-  step_val = len(train_loader)
-  step_log = int(step_val * args.print_ratio)
-  step_init = args.first_epoch * step_val
-  step_max = args.max_epoch * step_val
-  ema_warmup_steps = args.ema_warmup * int(step_val // args.accumulate_steps)
-  print(f"[ i ] Iterations: first={step_init} logging={step_log} validation={step_val} max={step_max}")
-
-  # Network
+def create_model(args: argparse.Namespace):
+  # ViT-based model
   if 'vit' in args.architecture:
     backbone = vits.vit_small(
       img_size=[224], 
@@ -472,7 +434,6 @@ if __name__ == '__main__':
     )
 
     if args.backbone_weights == 'imagenet':
-      print("No custom backbone provided, loading ImageNet pretrained weights.")
       timm_model = timm.create_model(
         "vit_small_patch16_224", pretrained=True, in_chans=3, num_classes=19)
 
@@ -492,8 +453,8 @@ if __name__ == '__main__':
 
       # Copy pretrained weights
       with torch.no_grad():
-          new_proj.weight[:, :3] = w  # keep RGB
-          new_proj.weight[:, 3] = w[:, 0]  # copy channel 0 (Red) into channel 4
+          new_proj.weight[:, :3] = w 
+          new_proj.weight[:, 3] = w[:, 0] 
           if proj.bias is not None:
               new_proj.bias.copy_(proj.bias)
 
@@ -502,58 +463,92 @@ if __name__ == '__main__':
 
       state_dict = timm_model.state_dict()
       msg = backbone.load_state_dict(state_dict, strict=False)
-      print('ImageNet pretrained weights loaded with msg: {}'.format(msg))
+      print('[ i ] ImageNet pretrained weights loaded with msg: {}'.format(msg))
 
     elif os.path.isfile(args.backbone_weights):
       state_dict = torch.load(args.backbone_weights, map_location="cpu", weights_only=False)
+      
       if args.checkpoint_key is not None and args.checkpoint_key in state_dict:
         print(f"Take key {args.checkpoint_key} in provided checkpoint dict")
         state_dict = state_dict[args.checkpoint_key]
-      # remove `module.` prefix
+
       state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
-      # remove `backbone.` prefix induced by multicrop wrapper
       state_dict = {k.replace("backbone.", ""): v for k, v in state_dict.items()}
+      
       msg = backbone.load_state_dict(state_dict, strict=False)
-      print('Pretrained weights found at {} and loaded with msg: {}'.format(args.backbone_weights, msg))
-    
+      print('[ i ] Pretrained weights found at {} and loaded with msg: {}'.format(args.backbone_weights, msg))
     
     model = vits.ViT_MIL_Classifier(
       backbone=backbone,
       num_classes=19
     )
 
+  # CNN-based model
   else:
-    model = HPAClassifier(
-      args.architecture,
-      num_classes=19,
-      channels=4,
-      backbone_weights=args.backbone_weights,
-      mode=args.mode,
-      dilated=args.dilated,
-      trainable_stem=args.trainable_stem,
-      trainable_backbone=args.trainable_backbone,
-    )
+    # SimCLR pretrained model or DINO pretrained model
+    if args.is_simclr_model or args.is_dino_model:
+      print("Loading backbone from SimCLR pretrained model.")
+      model = HPAClassifier(
+        args.architecture,
+        num_classes=19,
+        channels=4,
+        backbone_weights=None,
+        mode=args.mode,
+        dilated=args.dilated,
+        trainable_stem=args.trainable_stem,
+        trainable_backbone=args.trainable_backbone,
+      )
+
+      # Load SimCLR weights
+      if args.is_simclr_model:
+        state_dict = torch.load(args.backbone_weights, map_location="cpu")
+        state_dict = {
+            k.replace("backbone.", ""): v
+            for k, v in state_dict.items()
+            if k.startswith("backbone.")
+        }
+        print(f"Backbone state dict keys: {list(state_dict.keys())} ...")
+        model.backbone.load_state_dict(state_dict, strict=True)
+
+      # Load DINO weights
+      if args.is_dino_model:
+        state_dict = torch.load(args.backbone_weights, map_location="cpu", weights_only=False)
+    
+        if args.checkpoint_key is not None and args.checkpoint_key in state_dict:
+          print(f"Take key {args.checkpoint_key} in provided checkpoint dict")
+          state_dict = state_dict[args.checkpoint_key]
+
+        state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+        state_dict = {k.replace("backbone.", ""): v for k, v in state_dict.items()}
+        
+        # Remove head weights
+        state_dict = {k: v for k, v in state_dict.items() if not k.startswith("head.")}
+
+        print(f"Backbone state dict keys: {list(state_dict.keys())} ...")
+        model.backbone.load_state_dict(state_dict, strict=True)
+    
+    # Regular model
+    else:
+      model = HPAClassifier(
+        args.architecture,
+        num_classes=19,
+        channels=4,
+        backbone_weights=args.backbone_weights,
+        mode=args.mode,
+        dilated=args.dilated,
+        trainable_stem=args.trainable_stem,
+        trainable_backbone=args.trainable_backbone,
+      )
 
   if args.model_restore:
-    print(f"[ i ] Restoring weights from {args.model_restore}")
+    print(f"[ i ] Restoring weights from previous training {args.model_restore}")
     model.load_state_dict(torch.load(args.model_restore), strict=True)
-
-  param_groups, param_names = model.get_parameter_groups(with_names=True)
-  model.train()
-
-  if args.ema:
-    ema_model = ema_mod.init(model, DEVICE, args.ema)
   
-  model = model.to(DEVICE)
+  return model
 
-  if GPUS_COUNT > 1:
-    print(f"GPUs={GPUS_COUNT}")
-    model = torch.nn.DataParallel(model)
 
-    if args.ema:
-      ema_model = torch.nn.DataParallel(ema_model)
-
-  # Optimizer
+def create_optimizer(
+  args: argparse.Namespace, param_groups, param_names, step_init, step_max):
   if args.poly_lr_decay:
     print(f"[ i ] Using polynomial learning rate decay.")
     optimizer = get_optimizer(
@@ -574,17 +569,30 @@ if __name__ == '__main__':
   if args.optimizer_restore:
     print(f"[ i ] Restoring optimizer state from {args.optimizer_restore}")
     optimizer.load_state_dict(torch.load(args.optimizer_restore))
-
-    print("Optimizer LR:", optimizer.param_groups[0]["lr"])
+    print("[ i ] Optimizer LR:", optimizer.param_groups[0]["lr"])
+  
   log_opt_params("Vanilla", param_names)
+  
+  return optimizer
 
-  # Mixed precision
-  scaler = torch.amp.GradScaler(DEVICE, enabled=args.mixed_precision)
+
+def create_scaler(args: argparse.Namespace):
+  try:
+    scaler = torch.amp.GradScaler(DEVICE, enabled=args.mixed_precision)
+    print("[ i ] Using torch.amp.GradScaler for mixed precision.", DEVICE)
+  except AttributeError:
+    scaler = torch.cuda.amp.GradScaler(enabled=args.mixed_precision)
+    print("[ i ] Using torch.cuda.amp.GradScaler for mixed precision.", DEVICE)
+    
   if args.scaler_restore:
     print(f"[ i ] Restoring scaler state from {args.scaler_restore}")
     scaler.load_state_dict(torch.load(args.scaler_restore))
+  return scaler
+
+
+def create_scheduler(
+  args: argparse.Namespace, optimizer, step_init, step_max, step_val, warmup_steps):
   
-  # Schedulers
   if args.scheduler_restore:
     print(f"[ i ] Restoring scheduler state from {args.scheduler_restore}")
     scheduler_state_dict = torch.load(args.scheduler_restore)
@@ -620,7 +628,121 @@ if __name__ == '__main__':
     print(f"Current scheduler epoch: {scheduler.last_epoch}")
     print(f"[ i ] Initial scheduler lr: {scheduler.get_last_lr()}")
 
-  # Optimizer and scheduler lr
+  return scheduler
+
+
+if __name__ == '__main__':
+  args = parser.parse_args()
+
+  ###########################
+  # Set global variables    #
+  ###########################
+
+  TAG = args.tag
+  SEED = args.seed
+  SAVE_EVERY_EPOCH = True
+  set_seed(SEED)
+
+  # Set device
+  DEVICE = args.device
+  if DEVICE == "cpu":
+    args.mixed_precision = False
+    print("[ i ] Using CPU for training. Disabling mixed precision.")
+  else:
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[ i ] Using device: {DEVICE} ({torch.cuda.get_device_name(0)})")
+
+  # Set class weights
+  if args.class_weight and args.class_weight != "none":
+    CLASS_WEIGHT = torch.Tensor(list(map(float, args.class_weight.split(",")))).to(DEVICE)
+  else:
+    CLASS_WEIGHT = None
+
+  # Positive weight for cell classification
+  pos_weight = torch.ones(19) / args.cell_pos_weight
+  pos_weight = pos_weight.to(DEVICE)
+  print(f"[ i ] Cell positive weight: {pos_weight}")
+
+  ###########################
+  # Initial configuration   #
+  ###########################
+
+  # Set up WandB
+  wb_run = wandb_utils.setup(TAG, args)
+  log_config(vars(args), TAG)
+
+  # Create directory model
+  if os.path.isdir('./experiments/models/' + TAG):
+    print(f"Model directory already exists: ./experiments/models/{TAG}")
+    raise FileExistsError(
+      f"Model directory already exists: ./experiments/models/{TAG}. "
+      "Please change the tag or remove the existing directory.")
+  
+  # Set model directory
+  model_dir = create_directory('./experiments/models/' + TAG + '/')
+  model_path = model_dir + f'model.pth'
+
+  ###########
+  # Dataset #
+  ###########
+
+  ts, vs = create_datasets(args)
+  train_loader, valid_loader = create_train_valid_dataloaders(args)
+  train_iterator = datasets.Iterator(train_loader)
+  log_loader(train_loader, ts, check_sampler=False)
+
+  #########
+  # Steps #
+  #########
+
+  step_val = len(train_loader)
+  step_log = int(step_val * args.print_ratio)
+  step_init = args.first_epoch * step_val
+  step_max = args.max_epoch * step_val
+  warmup_steps = args.warmup_epochs * int(step_val // args.accumulate_steps)
+  ema_warmup_steps = args.ema_warmup * int(step_val // args.accumulate_steps)
+  print(f"[ i ] Iterations: first={step_init} logging={step_log} validation={step_val} max={step_max}")
+
+  ###############
+  # Build model #
+  ###############
+
+  model = create_model(args)
+  param_groups, param_names = model.get_parameter_groups(with_names=True)
+  model = model.to(DEVICE)
+  model.train()
+
+  if args.ema:
+    ema_model = ema_mod.init(model, DEVICE, args.ema)
+
+  if GPUS_COUNT > 1:
+    print(f"GPUs={GPUS_COUNT}")
+    model = torch.nn.DataParallel(model)
+    if args.ema:
+      ema_model = torch.nn.DataParallel(ema_model)
+
+  #############
+  # Optimizer #
+  #############
+
+  optimizer = create_optimizer(args, param_groups, param_names, step_init, step_max)
+
+  ###################
+  # Mixed precision #
+  ###################
+
+  scaler = create_scaler(args)
+  
+  ##############
+  # Schedulers #
+  ##############
+
+  scheduler = create_scheduler(args, optimizer, step_init, step_max, step_val, warmup_steps)
+
+  ##############################
+  # Optimizer and scheduler lr #
+  ##############################
+
   print(f"[ i ] Initial optimizer lr: {get_learning_rate_from_optimizer(optimizer)}")
 
   if args.train_meta_restore:
@@ -630,7 +752,10 @@ if __name__ == '__main__':
     args.first_epoch = training_meta['epoch'] + 1
     print(f"[ i ] Restored step={step_init}, epoch={args.first_epoch}")
 
-  # Train
+  #########
+  # Train #
+  #########
+
   train_meter = MetricsContainer(['loss'])
   train_timer = Timer()
 
@@ -649,16 +774,6 @@ if __name__ == '__main__':
     image_labels = image_labels.to(DEVICE)
     cell_conf = cell_conf.to(DEVICE)
     image_conf = image_conf.to(DEVICE)
-
-    # DEBUG: print values and shapes
-    # print(f"images shape: {images.shape}, dtype: {images.dtype}")
-    # print(f"cell_labels shape: {cell_labels.shape}, dtype: {cell_labels.dtype}")
-    # print(f"image_labels shape: {image_labels.shape}, dtype: {image_labels.dtype}")
-    # print(f"cell_conf shape: {cell_conf.shape}, dtype: {cell_conf.dtype}")
-    # print(f"image_conf shape: {image_conf.shape}, dtype: {image_conf.dtype}")
-
-    # If a cell conf[18] > 0.5, change the cell label to positive
-    # If so, change the image label [18] to positive on that image
 
     if args.reannotate_neg_labels:
       # Step 1: Override cell labels for class 18 based on confidence
@@ -683,7 +798,7 @@ if __name__ == '__main__':
                   image_labels[i, class_18_idx] = 1
               start += num
 
-    with torch.autocast(device_type=DEVICE, enabled=args.mixed_precision):
+    with torch.autocast(device_type='cuda', enabled=args.mixed_precision):
       cell_logits, image_logits = model(
         images, 
         n_cells, 
@@ -726,9 +841,6 @@ if __name__ == '__main__':
           weighted_img_loss = weighted_img_loss.mean()
       
       # Calculate total loss
-      # if args.supervised_negative_training:
-      #   loss = weighted_cell_loss + weighted_img_loss
-      # else:
       loss = weighted_cell_loss * args.cell_loss_weight + weighted_img_loss
 
     scaler.scale(loss).backward()
