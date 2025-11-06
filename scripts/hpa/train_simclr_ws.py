@@ -208,26 +208,30 @@ def create_scheduler(
     print("[ i ] Scheduler state dict:")
     for key, value in scheduler_state_dict.items():
         print(f"  {key}: {value}")
-    
-  print(f"[ i ] Warmup steps: {warmup_steps}")
-  warmup_scheduler = LinearLR(
-    optimizer, 
-    start_factor=args.warmup_start_factor, 
-    total_iters=warmup_steps)
-  
+
   print(f"[ i ] Main steps: {main_steps}")
   main_scheduler = CosineAnnealingLR(
     optimizer, 
     T_max=main_steps)
 
-  scheduler = SequentialLR(
+  if warmup_steps > 0:
+    print(f"[ i ] Warmup steps: {warmup_steps}")
+    warmup_scheduler = LinearLR(
+      optimizer, 
+      start_factor=args.warmup_start_factor, 
+      total_iters=warmup_steps)
+    scheduler = SequentialLR(
       optimizer, 
       schedulers=[warmup_scheduler, main_scheduler], 
-      milestones=[warmup_steps])
+      milestones=[warmup_steps]
+    )
+  else:
+    scheduler = main_scheduler
   
   if args.scheduler_restore:
     for e in range(scheduler_state_dict['last_epoch']):
       scheduler.step()
+      
     print(f"Current scheduler epoch: {scheduler.last_epoch}")
     print(f"[ i ] Initial scheduler lr: {scheduler.get_last_lr()}")
 
@@ -237,7 +241,7 @@ def create_scheduler(
 def build_simclr_model(
   args: argparse.Namespace, 
   projection_dim=128, 
-  hidden_dim=256
+  hidden_dim=2048
 ) -> nn.Module:
   """Builds the SimCLR model."""
   print("[ i ] Building SimCLR model.")
@@ -317,7 +321,7 @@ if __name__ == '__main__':
 
   # Debugging
   if int(args.debug):
-    train_df = train_df.sample(n=50, random_state=SEED)
+    train_df = train_df.sample(n=100, random_state=SEED)
 
   # Data transformations
   base_tfms = Compose([
@@ -409,7 +413,7 @@ if __name__ == '__main__':
   # Optimizer and scheduler lr #
   ##############################
 
-  print(f"[ i ] Initial optimizer lr: {get_learning_rate_from_optimizer(optimizer)}")
+  print(f"[ i ] Initial optimizer lr: {scheduler.get_last_lr()}")
 
   #########
   # Train #
@@ -459,7 +463,7 @@ if __name__ == '__main__':
     # Update your progress bar and logging
     epoch = step // step_val
     epoch_loss = train_meter.get()
-    learning_rate = float(get_learning_rate_from_optimizer(optimizer))
+    learning_rate = float(scheduler.get_last_lr()[0])
     
     tqdm_bar.set_description(
         f"[epoch={epoch} loss={epoch_loss:.5f} lr={learning_rate:.5f}]"
@@ -467,9 +471,11 @@ if __name__ == '__main__':
     
     # Log to WandB
     if (step + 1) % step_log == 0:
+        lrs = scheduler.get_last_lr()
+        for i, lr in enumerate(lrs):
+            wandb.log({f"train/lr_group_{i}": lr, "train/epoch": epoch})
         wandb.log({
             "train/contrastive_loss": epoch_loss,
-            "train/learning_rate": learning_rate,
             "train/epoch": epoch
         })
 
