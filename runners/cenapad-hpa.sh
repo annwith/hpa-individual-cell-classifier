@@ -1,7 +1,7 @@
-#PBS -N hpa-2-place
+#PBS -N dino-down
 #PBS -q testegpu
-#PBS -e /home/lovelace/proj/proj1018/jmidlej/wsss-hpa-ju/logs/test.err
-#PBS -o /home/lovelace/proj/proj1018/jmidlej/wsss-hpa-ju/logs/test.log
+#PBS -e /home/lovelace/proj/proj1018/jmidlej/hpa-individual-cell-classifier/logs/test.err
+#PBS -o /home/lovelace/proj/proj1018/jmidlej/hpa-individual-cell-classifier/logs/test.log
 #PBS -m abe
 
 # Copyright 2023 Lucas Oliveira David
@@ -25,7 +25,7 @@
 DEBUG=0
 PRINT_RATIO=0.1
 MONITOR_MEMORY_USAGE=true
-WORK_DIR=/home/lovelace/proj/proj1018/jmidlej/wsss-hpa-ju
+WORK_DIR=/home/lovelace/proj/proj1018/jmidlej/hpa-individual-cell-classifier
 
 ## environment region
 unset CUDA_VISIBLE_DEVICES
@@ -33,7 +33,7 @@ unset CUDA_VISIBLE_DEVICES
 PY=python3
 PIP=pip
 DATASETS_DIR=/home/lovelace/proj/proj1018/jmidlej
-WORKERS_TRAIN=10
+WORKERS_TRAIN=8
 DEVICE=cuda
 
 echo "Loading modules cudnn/8.2.0.53-11.3-gcc-9.3.0 python/3.10.10-gcc-9.4.0"
@@ -50,11 +50,11 @@ echo "Working directory: $(pwd)"
 ## end region
 
 ## dataset region
-DATASET=hparanzer     # HPA Single Cell Classification
-TRAIN_CSV=$WORK_DIR/datasets/split/256_train+ext+rare.csv
+DATASET=hpa2nd     # HPA Single Cell Classification
+TRAIN_CSV=$WORK_DIR/datasets/split/dino-kaggle.csv
 DATA_DIR=$DATASETS_DIR/input/train_cell_256
 PERFORM_VALIDATION=false
-VAL_FOLD=0
+VAL_FOLD=5
 
 IMAGE_SIZE=256
 
@@ -80,42 +80,44 @@ ARCH=rs50
 # ARCH=rs101
 # ARCHITECTURE=resnest269
 # ARCH=rs269
-# ARCHITECTURE=swin_b
-# ARCH=swin_b_22k
-# PRETRAINED_WEIGHTS=./experiments/models/pretrained/swin_base_patch4_window7_224_22k.pth
-# ARCHITECTURE=swin_l
-# ARCH=swin_l_22k
-# PRETRAINED_WEIGHTS=./experiments/models/pretrained/swin_large_patch4_window7_224_22k.pth
-# ARCHITECTURE=mit_b0
-# ARCH=mit_b0
-# PRETRAINED_WEIGHTS=./experiments/models/pretrained/mit_b0.pth
-# ARCHITECTURE=mit_b5
-# ARCH=mit_b5
-# PRETRAINED_WEIGHTS=./experiments/models/pretrained/mit_b5.pth
 
 TRAINABLE_STEM=true
 TRAINABLE_STAGE4=true
 TRAINABLE_BONE=true
 DILATED=false
 MODE=normal
+CELL_LOGITS_TO_IMAGE_LOGITS=false
 
-# PRETRAINED_WEIGHTS=./experiments/models/resnest269-0cc87c48.pth
-PRETRAINED_WEIGHTS=imagenet
+# PRETRAINED_WEIGHTS=imagenet
+# IS_SIMCLR_MODEL=false
+PRETRAINED_WEIGHTS=/home/jumidlej/dino-checkpoints/rs50-imagenet-norm-flip/checkpoint.pth
+IS_SIMCLR_MODEL=false
+IS_DINO_MODEL=true
+# PRETRAINED_WEIGHTS=/home/jumidlej/simclr-models/hpa2nd-rs50-lr0.0002-b128-aug2nd-adamw-eid-simclr-ws-1/model-e99.pth
+# IS_SIMCLR_MODEL=true
+# IS_DINO_MODEL=false
 
 # Confidences
-CONF_AWARE_TRAINING=false
-CONF_PREDS=none
+IMAGE_CONF_AWARE_TRAINING=false
+CELL_CONF_AWARE_TRAINING=false
+CONF_PREDS=no
 CONF_ALPHA=1.0
-CONF_GAMMA=1.0
+CONF_GAMMA=0.5
+
+REANNOTATE_NEG_LABELS=false
+REANNOTATE_THRESHOLD=0.01
+
+CELL_CONF_AS_CELL_LABELS=false
 
 # Training
 OPTIMIZER=adamw  # sgd,lion,lamb
-LR=0.0001
+POLY_LR_DECAY_OPTIMIZER=false
+LR=0.0002
 LR_ALPHA_SCRATCH=1.0
 LR_ALPHA_BIAS=1.0
 WD=0.0
 
-WARMUP_EPOCHS=2
+WARMUP_EPOCHS=1
 WARMUP_START_FACTOR=0.01
 
 LABELSMOOTHING=0
@@ -130,14 +132,14 @@ LABELSMOOTHING=0
 # LR=0.0001
 # WD=0.01
 
-EPOCHS=10
+EPOCHS=20
 EPOCH0=0
-BATCH=6
+BATCH=4
 EVAL_BATCH=1
-ACCUMULATE_STEPS=4
+ACCUMULATE_STEPS=6
 
 CLASS_WEIGHT=none
-CELL_POS_WEIGHT=10.0
+CELL_POS_WEIGHT=10
 CELL_LOSS_WEIGHT=0.1
 
 EMA_ENABLED=false
@@ -147,13 +149,17 @@ EMA_DECAY=0.99
 
 MIXED_PRECISION=true
 
-## Augmentation
+## Augmentation and normalization
+NORM_MEAN=0.485,0.456,0.406,0.485
+NORM_STD=0.229,0.224,0.225,0.229
+# NORM_MEAN=0.5,0.5,0.5,0.5
+# NORM_STD=0.5,0.5,0.5,0.5
 AUGMENT_YAML=$WORK_DIR/configs/sin_256_final.yaml
 AUG=aug2nd
-# AUGMENT_YAML=none
+# AUGMENT_YAML=""
 # AUG=no
 
-# RESTORE_DIR=$WORK_DIR/experiments/models/ranzer/test_schedule_restore
+RESTORE_DIR=$WORK_DIR
 
 # Restore
 MODEL_RESTORE=""
@@ -168,14 +174,14 @@ SCHEDULER_RESTORE=""
 # TRAIN_META_RESTORE=$RESTORE_DIR/training_meta.pth
 # SCHEDULER_RESTORE=$RESTORE_DIR/scheduler.pth
 
-train_ranzer() {
-  echo "=================================================================="
+train() {
+  echo "===================================================================================================="
   echo "[train $TAG] started at $(date +'%Y-%m-%d %H:%M:%S')."
-  echo "=================================================================="
+  echo "===================================================================================================="
 
   WANDB_TAGS="$DATASET,$ARCH,lr:$LR,wd:$WD,ls:$LABELSMOOTHING,b:$BATCH,aug:$AUG,opt:$OPTIMIZER,sampler:$SAMPLER" \
-  WANDB_RUN_GROUP="$DATASET-$ARCH-vanilla-cp" \
-    $PY scripts/hpa/train_ranzer.py \
+  WANDB_RUN_GROUP="$DATASET-$ARCH-dual-head" \
+    $PY scripts/hpa/train.py \
     --device $DEVICE \
     --optimizer $OPTIMIZER \
     --poly_lr_decay $POLY_LR_DECAY_OPTIMIZER \
@@ -195,17 +201,26 @@ train_ranzer() {
     --ema_warmup $EMA_WARMUP \
     --ema_steps $EMA_STEPS \
     --ema_decay $EMA_DECAY \
-    --conf_aware_training $CONF_AWARE_TRAINING \
+    --cell_conf_aware_training $CELL_CONF_AWARE_TRAINING \
+    --image_conf_aware_training $IMAGE_CONF_AWARE_TRAINING \
     --conf_preds $CONF_PREDS \
     --conf_alpha $CONF_ALPHA \
     --conf_gamma $CONF_GAMMA \
+    --reannotate_neg_labels $REANNOTATE_NEG_LABELS \
+    --reannotate_threshold $REANNOTATE_THRESHOLD \
+    --cell_conf_as_cell_labels $CELL_CONF_AS_CELL_LABELS \
     --architecture $ARCHITECTURE \
     --dilated $DILATED \
     --mode $MODE \
     --backbone_weights $PRETRAINED_WEIGHTS \
+    --is_simclr_model $IS_SIMCLR_MODEL \
+    --is_dino_model $IS_DINO_MODEL \
     --trainable-stem $TRAINABLE_STEM \
     --trainable-backbone $TRAINABLE_BONE \
+    --cell_logits_to_image_logits $CELL_LOGITS_TO_IMAGE_LOGITS \
     --image_size $IMAGE_SIZE \
+    --normalization_mean $NORM_MEAN \
+    --normalization_std $NORM_STD \
     --aug_yaml $AUGMENT_YAML \
     --first_epoch $EPOCH0 \
     --max_epoch $EPOCHS \
@@ -228,17 +243,16 @@ train_ranzer() {
     --scheduler_restore "$SCHEDULER_RESTORE" \
     --scaler_restore "$SCALER_RESTORE" \
     --train_meta_restore "$TRAIN_META_RESTORE"
-  echo "=================================================================="
+  echo "===================================================================================================="
   echo "[train $TAG] finished at $(date +'%Y-%m-%d %H:%M:%S')."
-  echo "=================================================================="
+  echo "===================================================================================================="
 }
 
 # region Classification Experiments
 
-# EID=1  # Experiment ID
-# TAG=ranzer/$DATASET-$IMAGE_SIZE-${ARCH}-lr${LR}-b${BATCH}-ls$LABELSMOOTHING-$AUG-$OPTIMIZER-eid$EID
-TAG=ranzer/test
+EID=-down-task-dino # Experiment ID
+TAG=$DATASET-${ARCH}-lr${LR}-b${BATCH}-$AUG-$OPTIMIZER-eid$EID
 
-train_ranzer
+train
 
 # endregion

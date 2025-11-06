@@ -34,7 +34,7 @@ DEVICE='cuda:0'
 ## end region
 
 ## dataset region
-DATASET=hparanzer     # HPA Single Cell Classification
+DATASET=hpa2nd     # HPA Single Cell Classification
 TRAIN_CSV=$WORK_DIR/datasets/split/dino-kaggle.csv
 DATA_DIR=$DATASETS_DIR/input/train_cell_256
 PERFORM_VALIDATION=false
@@ -84,9 +84,14 @@ DILATED=false
 MODE=normal
 CELL_LOGITS_TO_IMAGE_LOGITS=false
 
-# PRETRAINED_WEIGHTS=./experiments/models/resnest269-0cc87c48.pth
 # PRETRAINED_WEIGHTS=imagenet
-PRETRAINED_WEIGHTS=/home/jumidlej/simclr-models/hpa2nd-rs50-lr0.0002-b128-aug2nd-adamw-eid-simclr-1/model-e99.pth
+# IS_SIMCLR_MODEL=false
+PRETRAINED_WEIGHTS=/home/jumidlej/dino-checkpoints/rs50-imagenet-norm-flip/checkpoint.pth
+IS_SIMCLR_MODEL=false
+IS_DINO_MODEL=true
+# PRETRAINED_WEIGHTS=/home/jumidlej/simclr-models/hpa2nd-rs50-lr0.0002-b128-aug2nd-adamw-eid-simclr-ws-1/model-e99.pth
+# IS_SIMCLR_MODEL=true
+# IS_DINO_MODEL=false
 
 # Confidences
 IMAGE_CONF_AWARE_TRAINING=false
@@ -123,7 +128,7 @@ LABELSMOOTHING=0
 # LR=0.0001
 # WD=0.01
 
-EPOCHS=10
+EPOCHS=20
 EPOCH0=0
 BATCH=4
 EVAL_BATCH=1
@@ -143,6 +148,8 @@ MIXED_PRECISION=true
 ## Augmentation and normalization
 NORM_MEAN=0.485,0.456,0.406,0.485
 NORM_STD=0.229,0.224,0.225,0.229
+# NORM_MEAN=0.5,0.5,0.5,0.5
+# NORM_STD=0.5,0.5,0.5,0.5
 AUGMENT_YAML=$WORK_DIR/configs/sin_256_final.yaml
 AUG=aug2nd
 # AUGMENT_YAML=""
@@ -202,6 +209,8 @@ train() {
     --dilated $DILATED \
     --mode $MODE \
     --backbone_weights $PRETRAINED_WEIGHTS \
+    --is_simclr_model $IS_SIMCLR_MODEL \
+    --is_dino_model $IS_DINO_MODEL \
     --trainable-stem $TRAINABLE_STEM \
     --trainable-backbone $TRAINABLE_BONE \
     --cell_logits_to_image_logits $CELL_LOGITS_TO_IMAGE_LOGITS \
@@ -237,7 +246,7 @@ train() {
 
 # region Classification Experiments
 
-EID=-2nd-simclr-ws # Experiment ID
+EID=-down-task-dino # Experiment ID
 TAG=$DATASET-${ARCH}-lr${LR}-b${BATCH}-$AUG-$OPTIMIZER-eid$EID
 
 train

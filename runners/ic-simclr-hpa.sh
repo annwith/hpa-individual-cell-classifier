@@ -19,18 +19,18 @@
 DEBUG=1
 PRINT_RATIO=0.1
 MONITOR_MEMORY_USAGE=true
-# WORK_DIR=/home/jumidlej/hpa-individual-cell-classifier
-WORK_DIR=/home/unicamp/200208/models/hpa-individual-cell-classifier
+WORK_DIR=/home/jumidlej/git-projects/hpa-individual-cell-classifier
+# WORK_DIR=/home/unicamp/200208/models/hpa-individual-cell-classifier
 
 ## environment region
 
 PY=python3
 PIP=pip
 WORKERS_TRAIN=8
-# DATASETS_DIR=/home/jumidlej/datasets
-DATASETS_DIR=/home/unicamp/200208/datasets
+DATASETS_DIR=/home/jumidlej/datasets
+# DATASETS_DIR=/home/unicamp/200208/datasets
 
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 DEVICE='cuda:0'
 
 ## end region
@@ -43,7 +43,7 @@ DATA_DIR=$DATASETS_DIR/input/train_cell_256
 IMAGE_SIZE=256
 SAMPLER=default
 
-WEAKLY_SUPERVISED=true
+WEAKLY_SUPERVISED=false
 TEMPERATURE=0.07
 
 # end region
@@ -56,26 +56,8 @@ export PYTHONPATH=$(pwd)
 ## Architecture
 ### Priors
 
-# ARCHITECTURE=vit_small
-# ARCH=vit_small
 ARCHITECTURE=resnest50
 ARCH=rs50
-# ARCHITECTURE=resnest101
-# ARCH=rs101
-# ARCHITECTURE=resnest269
-# ARCH=rs269
-# ARCHITECTURE=swin_b
-# ARCH=swin_b_22k
-# PRETRAINED_WEIGHTS=./experiments/models/pretrained/swin_base_patch4_window7_224_22k.pth
-# ARCHITECTURE=swin_l
-# ARCH=swin_l_22k
-# PRETRAINED_WEIGHTS=./experiments/models/pretrained/swin_large_patch4_window7_224_22k.pth
-# ARCHITECTURE=mit_b0
-# ARCH=mit_b0
-# PRETRAINED_WEIGHTS=./experiments/models/pretrained/mit_b0.pth
-# ARCHITECTURE=mit_b5
-# ARCH=mit_b5
-# PRETRAINED_WEIGHTS=./experiments/models/pretrained/mit_b5.pth
 
 TRAINABLE_STEM=true
 TRAINABLE_STAGE4=true
@@ -176,7 +158,7 @@ train() {
 
 # region Classification Experiments
 
-EID=-simclr-ws-1  # Experiment ID
+EID=-test  # Experiment ID
 TAG=$DATASET-${ARCH}-lr${LR}-b${BATCH}-$AUG-$OPTIMIZER-eid$EID
 
 train
