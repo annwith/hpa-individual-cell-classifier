@@ -164,7 +164,7 @@ def build_backbone(name, dilated, strides, norm_fn, weights='imagenet', channels
         print(f'loading weights from {weights}')
         checkpoint = torch.load(weights, map_location="cpu")
         # model.load_state_dict(checkpoint['state_dict'], strict=False)
-        model.load_state_dict(checkpoint, strict=False)
+        model.load_state_dict(checkpoint, strict=True)
 
       if channels != 3:
         print("Modify input layer to receive 4 channels images.")
@@ -547,9 +547,7 @@ class SimCLRModel(nn.Module):
 
   def forward(self, x):
     features = self.backbone(x)
-    # This is a 4D tensor, e.g., (batch_size, 2048, 7, 7)
     feature_map = features[-1] if isinstance(features, tuple) else features
-    print(f"Feature map shape: {feature_map.shape}")
     
     # 1. Apply Global Average Pooling
     pooled_features = F.adaptive_avg_pool2d(feature_map, (1, 1)) # Shape becomes (batch_size, 2048, 1, 1)
