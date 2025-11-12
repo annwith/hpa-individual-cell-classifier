@@ -259,7 +259,7 @@ def validate_model(
             #     print(f"img_lbl: {img_lbl.shape}, {img_lbl.dtype}")
 
             # Get logits and loss
-            with torch.amp.autocast(DEVICE):
+            with torch.amp.autocast(device_type=DEVICE.type):
                 _, output = model(ipt, n_cell)
                 loss = F.binary_cross_entropy_with_logits(
                     output, img_lbl,
