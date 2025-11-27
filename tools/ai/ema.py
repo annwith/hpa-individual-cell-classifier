@@ -4,7 +4,8 @@ import torch
 
 
 def inference_model(model, ema_model, optimizer_step, enabled=True, warmup_steps=128):
-  step = optimizer_step + 1  # Make sure step=0 isn't incorrectly included.
+  # step = optimizer_step + 1  # Make sure step=0 isn't incorrectly included.
+  step = optimizer_step
 
   if enabled and step > warmup_steps:
     print(f"[Valid] Model=EMA step={step} > warmup={warmup_steps}")

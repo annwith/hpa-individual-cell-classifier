@@ -908,7 +908,9 @@ if __name__ == '__main__':
 
       # Update EMA model
       if args.ema:
-        ema_mod.copy(model, ema_model, optimizer.global_step,
+        optimizer_global_step = (step + 1) // args.accumulate_steps
+        print(f"[ i ] Updating EMA model at step {optimizer_global_step}")
+        ema_mod.copy(model, ema_model, optimizer_global_step,
                     args.ema, args.ema_decay, args.ema_steps, ema_warmup_steps)
     
     # Detach loss for logging
@@ -981,7 +983,8 @@ if __name__ == '__main__':
       if args.ema:
         print(f"[ i ] Saving EMA model to {model_path}")
         save_model(
-          ema_mod.inference_model(model, ema_model, optimizer.global_step, args.ema, ema_warmup_steps),
+          ema_mod.inference_model(
+            model, ema_model, optimizer_global_step, args.ema, ema_warmup_steps),
           model_path, parallel=GPUS_COUNT > 1)
       else:
         print(f"[ i ] Saving model to {model_path}")
@@ -1001,7 +1004,8 @@ if __name__ == '__main__':
   if args.ema:
     print(f"[ i ] Saving EMA model to {model_path}")
     save_model(
-      ema_mod.inference_model(model, ema_model, optimizer.global_step, args.ema, ema_warmup_steps),
+      ema_mod.inference_model(
+        model, ema_model, optimizer_global_step, args.ema, ema_warmup_steps),
       model_path, parallel=GPUS_COUNT > 1)
   else:
     print(f"[ i ] Saving model to {model_path}")
