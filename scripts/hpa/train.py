@@ -631,12 +631,65 @@ def create_scheduler(
   return scheduler
 
 
+def reannotate_negative_labels(
+    args: argparse.Namespace,
+    cell_labels: torch.Tensor,
+    image_labels: torch.Tensor,
+    cell_conf: torch.Tensor,
+    n_cells: list,
+):
+    # Formato das labels: (n_cells_total, 19) e (batch_size, 19)
+
+    # --- Step 1: Cell level ---
+    class_18_idx = 18
+    high_conf_mask = cell_conf[:, class_18_idx] > args.reannotate_threshold
+    cell_labels[high_conf_mask, class_18_idx] = 1
+    cell_labels[high_conf_mask, :class_18_idx] = 0
+
+    # --- Step 2: Image level ---
+    # Create an index vector that maps every cell to its image ID
+    # e.g., if n_cells = [2, 1], batch_indices = [0, 0, 1]
+    batch_indices = torch.repeat_interleave(
+        torch.arange(len(n_cells), device=n_cells.device), 
+        n_cells
+    )
+
+    # Extract the values (0 or 1)
+    values = cell_labels[:, class_18_idx]
+
+    # Use scatter_reduce_ to find the max value per image index
+    # "amax" ensures that if any cell is 1, the image becomes 1
+    image_labels[:, class_18_idx].scatter_reduce_(
+        0, 
+        batch_indices, 
+        values, 
+        reduce="amax", 
+        include_self=False
+    )
+
+    return cell_labels, image_labels
+
+
+def get_memory_usage_GB():
+    cpu_mem = psutil.virtual_memory()
+    cpu_mem_used = cpu_mem.used / (1024 ** 3)
+    cpu_mem_free = cpu_mem.available / (1024 ** 3)
+
+    gpu_mem_used = torch.cuda.memory_allocated(0) / (1024 ** 3)
+    gpu_mem_reserved = torch.cuda.memory_reserved(0) / (1024 ** 3)
+    gpu_mem_free = (
+        torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_reserved(0)
+    ) / (1024 ** 3)
+
+    return cpu_mem_used, cpu_mem_free, gpu_mem_used, gpu_mem_reserved, gpu_mem_free
+
+
 if __name__ == '__main__':
   args = parser.parse_args()
 
-  ###########################
-  # Set global variables    #
-  ###########################
+  # -----------------------------------------------
+  # Set global variables
+  # -----------------------------------------------
 
   TAG = args.tag
   SEED = args.seed
@@ -659,13 +712,12 @@ if __name__ == '__main__':
     CLASS_WEIGHT = None
 
   # Positive weight for cell classification
-  pos_weight = torch.ones(19) / args.cell_pos_weight
-  pos_weight = pos_weight.to(DEVICE)
+  pos_weight = (torch.ones(19) / args.cell_pos_weight).to(DEVICE)
   print(f"[ i ] Cell positive weight: {pos_weight}")
 
-  ###########################
-  # Initial configuration   #
-  ###########################
+  # -----------------------------------------------
+  # Initial configuration
+  # -----------------------------------------------
 
   # Set up WandB
   wb_run = wandb_utils.setup(TAG, args)
@@ -682,18 +734,18 @@ if __name__ == '__main__':
   model_dir = create_directory('./experiments/models/' + TAG + '/')
   model_path = model_dir + f'model.pth'
 
-  ###########
-  # Dataset #
-  ###########
+  # -----------------------------------------------
+  # Dataset
+  # -----------------------------------------------
 
   ts, vs = create_datasets(args)
   train_loader, valid_loader = create_train_valid_dataloaders(args)
   train_iterator = datasets.Iterator(train_loader)
   log_loader(train_loader, ts, check_sampler=False)
 
-  #########
-  # Steps #
-  #########
+  # -----------------------------------------------
+  # Steps
+  # -----------------------------------------------
 
   step_val = len(train_loader)
   step_log = int(step_val * args.print_ratio)
@@ -703,9 +755,9 @@ if __name__ == '__main__':
   ema_warmup_steps = args.ema_warmup * int(step_val // args.accumulate_steps)
   print(f"[ i ] Iterations: first={step_init} logging={step_log} validation={step_val} max={step_max}")
 
-  ###############
-  # Build model #
-  ###############
+  # -----------------------------------------------
+  # Build model
+  # -----------------------------------------------
 
   model = create_model(args)
   param_groups, param_names = model.get_parameter_groups(with_names=True)
@@ -721,27 +773,27 @@ if __name__ == '__main__':
     if args.ema:
       ema_model = torch.nn.DataParallel(ema_model)
 
-  #############
-  # Optimizer #
-  #############
+  # -----------------------------------------------
+  # Optimizer
+  # -----------------------------------------------
 
   optimizer = create_optimizer(args, param_groups, param_names, step_init, step_max)
 
-  ###################
-  # Mixed precision #
-  ###################
+  # -----------------------------------------------
+  # Mixed precision
+  # -----------------------------------------------
 
   scaler = create_scaler(args)
   
-  ##############
-  # Schedulers #
-  ##############
+  # -----------------------------------------------
+  # Schedulers
+  # -----------------------------------------------
 
   scheduler = create_scheduler(args, optimizer, step_init, step_max, step_val, warmup_steps)
 
-  ##############################
-  # Optimizer and scheduler lr #
-  ##############################
+  # -----------------------------------------------
+  # Optimizer and scheduler lr
+  # -----------------------------------------------
 
   print(f"[ i ] Initial optimizer lr: {get_learning_rate_from_optimizer(optimizer)}")
 
@@ -752,9 +804,9 @@ if __name__ == '__main__':
     args.first_epoch = training_meta['epoch'] + 1
     print(f"[ i ] Restored step={step_init}, epoch={args.first_epoch}")
 
-  #########
-  # Train #
-  #########
+  # -----------------------------------------------
+  # Train
+  # -----------------------------------------------
 
   train_meter = MetricsContainer(['loss'])
   train_timer = Timer()
@@ -763,63 +815,61 @@ if __name__ == '__main__':
   for step in tqdm_bar:
     images, cell_labels, image_labels, cell_conf, image_conf, n_cells = train_iterator.get()
     
+    # -----------------------------------------------
+    # Reshape if needed
+    # -----------------------------------------------
     if args.cell_count > 0:
       images = images.view(-1, images.shape[-3], images.shape[-2], images.shape[-1])
       cell_labels = cell_labels.view(-1, cell_labels.shape[-1])
       cell_conf = cell_conf.view(-1, cell_conf.shape[-1])
 
+    # -----------------------------------------------
     # Send to device
+    # -----------------------------------------------
     images = images.to(DEVICE)
     cell_labels = cell_labels.to(DEVICE)
     image_labels = image_labels.to(DEVICE)
     cell_conf = cell_conf.to(DEVICE)
     image_conf = image_conf.to(DEVICE)
 
+    # -----------------------------------------------
+    # Re-annotate negative labels if needed
+    # -----------------------------------------------
     if args.reannotate_neg_labels:
-      # Step 1: Override cell labels for class 18 based on confidence
-      class_18_idx = 18
-      high_conf_mask = cell_conf[:, class_18_idx] > args.reannotate_threshold
-      cell_labels[high_conf_mask, class_18_idx] = 1
-
-      # Step 2: Propagate to image-level label
-      # We need to know which cells belong to which image.
-      # If not available, use `n_cells` (number of cells per image in the batch)
-      if args.cell_count > 0:
-          # We assume cells are ordered per image in the batch.
-          # Reconstruct batch size
-          batch_size = len(n_cells)
-          start = 0
-          for i in range(batch_size):
-              num = n_cells[i]
-              # Get all cells for this image
-              cell_slice = cell_labels[start:start+num]
-              # If any cell has class 18 == 1, set image label class 18 = 1
-              if cell_slice[:, class_18_idx].any():
-                  image_labels[i, class_18_idx] = 1
-              start += num
+      cell_labels, image_labels = reannotate_negative_labels(
+          args,
+          cell_labels,
+          image_labels,
+          cell_conf,
+          n_cells,
+      )
 
     with torch.autocast(device_type='cuda', enabled=args.mixed_precision):
+      # -----------------------------------------------
+      # Forward pass
+      # -----------------------------------------------
       cell_logits, image_logits = model(
         images, 
         n_cells, 
         cell_logits_to_image_logits=args.cell_logits_to_image_logits)
 
+      # -----------------------------------------------
+      # Calculate losses
+      # -----------------------------------------------
       if args.cell_conf_as_cell_labels:
         cell_loss = F.binary_cross_entropy_with_logits(
                                   cell_logits, cell_conf,
                                   pos_weight=pos_weight,
-                                  reduction='none') # Per sample, per class loss
-        img_loss = F.binary_cross_entropy_with_logits(
-                                  image_logits, image_conf,
                                   reduction='none') # Per sample, per class loss
       else:
         cell_loss = F.binary_cross_entropy_with_logits(
                                   cell_logits, cell_labels,
                                   pos_weight=pos_weight,
                                   reduction='none') # Per sample, per class loss
-        img_loss = F.binary_cross_entropy_with_logits(
-                                  image_logits, image_labels,
-                                  reduction='none') # Per sample, per class loss
+        
+      img_loss = F.binary_cross_entropy_with_logits(
+                                image_logits, image_labels,
+                                reduction='none') # Per sample, per class loss
       
       weighted_cell_loss = cell_loss
       weighted_img_loss = img_loss
@@ -843,22 +893,30 @@ if __name__ == '__main__':
       # Calculate total loss
       loss = weighted_cell_loss * args.cell_loss_weight + weighted_img_loss
 
+    # -----------------------------------------------
+    # Backward pass and optimization step
+    # -----------------------------------------------
     scaler.scale(loss).backward()
-
     if (step + 1) % args.accumulate_steps == 0:
       scaler.step(optimizer)
       scaler.update()
       optimizer.zero_grad()
 
+      # Step the scheduler
       if not args.poly_lr_decay:
         scheduler.step()
 
+      # Update EMA model
       if args.ema:
         ema_mod.copy(model, ema_model, optimizer.global_step,
                     args.ema, args.ema_decay, args.ema_steps, ema_warmup_steps)
-
+    
+    # Detach loss for logging
     loss = loss.detach().cpu().item()
 
+    # -----------------------------------------------
+    # Logging
+    # -----------------------------------------------
     train_meter.update({'loss': loss})
 
     epoch = step // step_val
@@ -869,17 +927,7 @@ if __name__ == '__main__':
     learning_rate = float(get_learning_rate_from_optimizer(optimizer))
   
     if args.monitor_memory_usage:
-      # Get CPU and RAM usage
-      cpu_mem = psutil.virtual_memory()
-      cpu_mem_used = cpu_mem.used / (1024 ** 3)  # Convert to GB
-      cpu_mem_free = cpu_mem.available / (1024 ** 3)  # Convert to GB
-
-      # Get GPU usage
-      gpu_mem_used = torch.cuda.memory_allocated(0) / (1024 ** 3)
-      gpu_mem_reserved = torch.cuda.memory_reserved(0) / (1024 ** 3)
-      gpu_mem_free = (
-          torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_reserved(0)
-      ) / (1024 ** 3)
+      cpu_mem_used, cpu_mem_free, gpu_mem_used, gpu_mem_reserved, gpu_mem_free = get_memory_usage_GB()
       tqdm_bar.set_description(
         f"[epoch={epoch} loss={epoch_loss:.5f} "
         f"lr={learning_rate:.5f} cpu={cpu_mem_used:.2f}/{cpu_mem_free:.2f} GB "
@@ -901,6 +949,9 @@ if __name__ == '__main__':
       wb_logs["train/epoch"] = epoch
       wandb.log(wb_logs, commit=not (args.validate and is_val_step))
 
+    # -----------------------------------------------
+    # Validation
+    # -----------------------------------------------
     if args.validate and is_val_step:
       val_loss, report_df = validate_model(
         model, valid_loader, args)
@@ -920,6 +971,9 @@ if __name__ == '__main__':
       )
       print(report_df)
       
+    # -----------------------------------------------
+    # Save model
+    # -----------------------------------------------
     if is_val_step:
       if SAVE_EVERY_EPOCH:
         model_path = model_dir + f'model-f{args.val_fold}-e{epoch}.pth'
@@ -934,7 +988,6 @@ if __name__ == '__main__':
         save_model(model, model_path, parallel=GPUS_COUNT > 1)
 
       torch.save(optimizer.state_dict(), model_dir + 'optimizer.pth')
-
       if not args.poly_lr_decay:
         torch.save(scheduler.state_dict(), model_dir + 'scheduler.pth')
       torch.save(scaler.state_dict(), model_dir + 'scaler.pth')
@@ -942,6 +995,9 @@ if __name__ == '__main__':
 
       train_meter.clear()
   
+  # -----------------------------------------------
+  # Final save
+  # -----------------------------------------------
   if args.ema:
     print(f"[ i ] Saving EMA model to {model_path}")
     save_model(
