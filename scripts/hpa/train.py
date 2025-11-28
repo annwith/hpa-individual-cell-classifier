@@ -399,8 +399,11 @@ def create_train_valid_dataloaders(args: argparse.Namespace):
       pin_memory=False)
   else:
     sampler, shuffle = datasets.get_train_sampler_and_shuffler(
-      args.sampler, # Apenas o default funciona (None, True)
-      seed=args.sampler_seed)
+      sampler=args.sampler,
+      source=ts,
+      seed=args.sampler_seed,
+      clip_value=10
+      )
 
     train_loader = DataLoader(
       dataset=ts, 
@@ -726,9 +729,9 @@ if __name__ == '__main__':
   # Create directory model
   if os.path.isdir('./experiments/models/' + TAG):
     print(f"Model directory already exists: ./experiments/models/{TAG}")
-    raise FileExistsError(
-      f"Model directory already exists: ./experiments/models/{TAG}. "
-      "Please change the tag or remove the existing directory.")
+    # raise FileExistsError(
+    #   f"Model directory already exists: ./experiments/models/{TAG}. "
+    #   "Please change the tag or remove the existing directory.")
   
   # Set model directory
   model_dir = create_directory('./experiments/models/' + TAG + '/')

@@ -180,12 +180,21 @@ class ConfAwareHPADataset(Dataset):
 
         self.cols = ['class{}'.format(i) for i in range(19)]  # Target label column names
 
+
+    def get_labels(self):
+        """ Returns the labels of the dataset as a numpy array. """
+        labels = [row[self.cols].values.astype(np.float64) for index, row in self.df.iterrows()]
+        return np.array(labels)
+
+
     def get_num_cells(self):
         """ Returns the number of cells of each image on the dataset. """
         return self.df['idx']
 
+
     def __len__(self):
         return len(self.df)
+
 
     def __getitem__(self, index):
         row = self.df.loc[index]
