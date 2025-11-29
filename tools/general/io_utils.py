@@ -19,3 +19,8 @@ def str2bool(v):
     return False
   else:
     raise argparse.ArgumentTypeError('Boolean value expected.')
+  
+
+def str2floatlist(arg):
+    return [float(x.strip()) for x in arg.split(',')]
+

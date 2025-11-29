@@ -112,10 +112,6 @@ def calculate_parameters(model):
   return sum(param.numel() for param in model.parameters()) / 1000000.0
 
 
-def get_learning_rate_from_optimizer(optimizer):
-  return optimizer.param_groups[0]['lr']
-
-
 def set_trainable_layers(model, klass=None, trainable=False):
   for m in model.modules():
     if klass is None or isinstance(m, klass):

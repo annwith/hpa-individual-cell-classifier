@@ -18,7 +18,6 @@ class HPADataset(Dataset):
         cell_path=None,
         cell_count=16,
         cell_size=256,
-        label_smoothing=0,
         mode='train'):
 
         """
@@ -39,7 +38,6 @@ class HPADataset(Dataset):
         self.cell_path = cell_path
         self.cell_count = cell_count
         self.cell_size = cell_size
-        self.label_smoothing = label_smoothing
         self.mode = mode
 
         # Define image normalization (expects 4 channels)
@@ -102,11 +100,7 @@ class HPADataset(Dataset):
                 mask[idx] = 1  # Mark image as present
                 label[idx] = row[self.cols].values.astype(np.float64)  # Store label
 
-            # Apply label smoothing if specified
-            if self.label_smoothing == 0:
-                return batch, mask, label, row[self.cols].values.astype(np.float64)
-            else:
-                return batch, mask, 0.9 * label + 0.1 / 19, 0.9 * row[self.cols].values.astype(np.float64) + 0.1 / 19
+            return batch, mask, label, row[self.cols].values.astype(np.float64)
 
         # Handle validation samples
         if self.mode == 'valid':
@@ -155,7 +149,6 @@ class ConfAwareHPADataset(Dataset):
         cell_size=256,
         conf_aware=False,
         conf_path=None,
-        label_smoothing=0,
         mode='train'):
 
         # Store variables
@@ -167,7 +160,6 @@ class ConfAwareHPADataset(Dataset):
         self.cell_size = cell_size
         self.conf_aware = conf_aware
         self.conf_path = conf_path
-        self.label_smoothing = label_smoothing
         self.mode = mode
 
         if conf_aware:
@@ -258,13 +250,7 @@ class ConfAwareHPADataset(Dataset):
             img_conf = torch.tensor(img_conf)
             cnt = torch.tensor(cnt)
 
-            # Apply label smoothing if configured
-            if self.label_smoothing == 0:
-                return batch, label, img_label, conf, img_conf, cnt
-            else:
-                label = 0.9 * label + 0.1 / 19
-                img_label = 0.9 * img_label + 0.1 / 19
-                return batch, label, img_label, conf, img_conf, cnt
+            return batch, label, img_label, conf, img_conf, cnt
 
         # -------- VALIDATION MODE --------
         if self.mode == 'valid':
@@ -346,7 +332,6 @@ class NegativeClassifierDataset(Dataset):
         cell_size=256,
         conf_aware=False,
         conf_path=None,
-        label_smoothing=0,
         mode='train'):
 
         # Store variables
@@ -356,7 +341,6 @@ class NegativeClassifierDataset(Dataset):
         self.cell_size = cell_size
         self.conf_aware = conf_aware
         self.conf_path = conf_path
-        self.label_smoothing = label_smoothing
         self.mode = mode
 
         if conf_aware:
@@ -400,11 +384,7 @@ class NegativeClassifierDataset(Dataset):
             img = self.tensor_tfms(img)
             img_label = torch.tensor(row['is_negative'])
 
-            # Apply label smoothing if configured
-            if self.label_smoothing == 0:
-                return img, img_label
-            else:
-                raise NotImplementedError("Label smoothing is not implemented for NegativeClassifier in train mode.")
+            return img, img_label
 
         # -------- VALIDATION MODE --------
         if self.mode == 'valid':

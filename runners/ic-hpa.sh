@@ -16,7 +16,7 @@
 # Train a model to perform multilabel classification over a WSSS dataset.
 #
 
-DEBUG=0
+DEBUG=1
 PRINT_RATIO=0.1
 MONITOR_MEMORY_USAGE=true
 WORK_DIR=/home/jumidlej/git-projects/hpa-individual-cell-classifier
@@ -35,15 +35,15 @@ DEVICE='cuda:0'
 
 ## dataset region
 DATASET=hpa2nd     # HPA Single Cell Classification
-TRAIN_CSV=$WORK_DIR/datasets/split/dino-kaggle.csv
+TRAIN_CSV=$WORK_DIR/datasets/split/256_train+ext+rare.csv
 DATA_DIR=$DATASETS_DIR/input/train_cell_256
 PERFORM_VALIDATION=false
-VAL_FOLD=5
+VAL_FOLD=0
 
 IMAGE_SIZE=256
 
 CELL_COUNT=16
-SAMPLER=default
+SAMPLER=balanced-class
 
 # CELL_COUNT=-1
 # SAMPLER=balanced_cell_count
@@ -84,11 +84,12 @@ DILATED=false
 MODE=normal
 CELL_LOGITS_TO_IMAGE_LOGITS=false
 
-# PRETRAINED_WEIGHTS=imagenet
-# IS_SIMCLR_MODEL=false
-PRETRAINED_WEIGHTS=/home/jumidlej/dino-checkpoints/rs50-imagenet-norm-flip/checkpoint.pth
+PRETRAINED_WEIGHTS=imagenet
 IS_SIMCLR_MODEL=false
-IS_DINO_MODEL=true
+IS_DINO_MODEL=false
+# PRETRAINED_WEIGHTS=/home/jumidlej/dino-checkpoints/rs50-imagenet-norm-flip/checkpoint.pth
+# IS_SIMCLR_MODEL=false
+# IS_DINO_MODEL=true
 # PRETRAINED_WEIGHTS=/home/jumidlej/simclr-models/hpa2nd-rs50-lr0.0002-b128-aug2nd-adamw-eid-simclr-ws-1/model-e99.pth
 # IS_SIMCLR_MODEL=true
 # IS_DINO_MODEL=false
@@ -116,7 +117,7 @@ WD=0.0
 WARMUP_EPOCHS=1
 WARMUP_START_FACTOR=0.01
 
-LABELSMOOTHING=0
+LABELSMOOTHING=0.1
 
 # OPTIMIZER=momentum
 # LR=0.01
@@ -128,17 +129,17 @@ LABELSMOOTHING=0
 # LR=0.0001
 # WD=0.01
 
-EPOCHS=20
+EPOCHS=5
 EPOCH0=0
 BATCH=4
 EVAL_BATCH=1
 ACCUMULATE_STEPS=6
 
 CLASS_WEIGHT=none
-CELL_POS_WEIGHT=10
-CELL_LOSS_WEIGHT=0.1
+CELL_POS_WEIGHT=0.1
+CELL_LOSS_WEIGHT=0
 
-EMA_ENABLED=false
+EMA_ENABLED=true
 EMA_WARMUP=1
 EMA_STEPS=1
 EMA_DECAY=0.99
@@ -246,7 +247,7 @@ train() {
 
 # region Classification Experiments
 
-EID=-down-task-dino # Experiment ID
+EID=-teste # Experiment ID
 TAG=$DATASET-${ARCH}-lr${LR}-b${BATCH}-$AUG-$OPTIMIZER-eid$EID
 
 train

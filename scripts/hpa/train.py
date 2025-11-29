@@ -1,20 +1,18 @@
 import os
 import argparse
 
-import psutil
+import timm
+import wandb
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-import timm
 from sklearn.metrics import classification_report
 
 import torch
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
-from torch.utils.data import DataLoader, Sampler
+from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from torchvision.transforms import Compose, ToTensor, Normalize
-
-import albumentations as A
 
 import cv2
 cv2.setNumThreads(0)
@@ -22,24 +20,24 @@ cv2.setNumThreads(0)
 import datasets
 from datasets.hpa import ConfAwareHPADataset
 
-import wandb
 from core.networks import *
 import core.vision_transformer as vits
 from tools.ai import ema as ema_mod
-from tools.general.io_utils import *
+from tools.general.io_utils import create_directory, str2floatlist, str2bool
+from tools.general.time_utils import Timer
 from tools.general import wandb_utils
-from tools.ai.optim_utils import *
-from tools.ai.log_utils import *
-from tools.general.time_utils import *
-
-
-def str2floatlist(arg):
-    return [float(x.strip()) for x in arg.split(',')]
+from tools.ai.optim_utils import get_optimizer, get_regular_optimizer, \
+  get_learning_rate_from_optimizer, OPTIMIZERS_NAMES
+from tools.ai.log_utils import log_config, log_loader, log_opt_params, \
+  get_memory_usage_GB, MetricsContainer
+from tools.ai.torch_utils import set_seed, save_model
 
 
 parser = argparse.ArgumentParser()
 
-# Dataset
+# -----------------------------------------------
+# Dataset hyperparameters
+# -----------------------------------------------
 parser.add_argument('--debug', default=None, type=str)
 parser.add_argument('--device', default='cuda', type=str)
 parser.add_argument('--seed', default=0, type=int)
@@ -59,7 +57,9 @@ parser.add_argument('--validate_batch_size', default=32, type=int)
 parser.add_argument('--cell_count', default=16, type=int)
 parser.add_argument('--image_size', default=512, type=int)
 
-# Network
+# -----------------------------------------------
+# Network hyperparameters
+# -----------------------------------------------
 parser.add_argument('--architecture', default='resnet50', type=str)
 parser.add_argument('--mode', default='normal', type=str)  # fix
 parser.add_argument('--trainable-stem', default=True, type=str2bool)
@@ -72,7 +72,9 @@ parser.add_argument("--checkpoint_key", default="teacher", type=str,
         help='Key to use in the checkpoint (example: "teacher")')
 parser.add_argument('--cell_logits_to_image_logits', default=False, type=str2bool)
 
-# Hyperparameter
+# -----------------------------------------------
+# Training hyperparameters
+# -----------------------------------------------
 parser.add_argument('--batch_size', default=32, type=int)
 parser.add_argument("--first_epoch", default=0, type=int)
 parser.add_argument('--max_epoch', default=15, type=int)
@@ -106,22 +108,31 @@ parser.add_argument('--cell_conf_as_cell_labels', default=False, type=str2bool)
 parser.add_argument('--print_ratio', default=0.1, type=float)
 parser.add_argument('--monitor_memory_usage', default=False, type=str2bool)
 
-# Normalization and data augmentation
+# -----------------------------------------------
+# Normalization and data augmentation settings
+# -----------------------------------------------
 parser.add_argument('--normalization_mean', default='0.485,0.456,0.406,0.406', type=str2floatlist)
 parser.add_argument('--normalization_std', default='0.229,0.224,0.225,0.225', type=str2floatlist)
 parser.add_argument('--aug_yaml', default='', type=str)
 
-# Restore training
+# -----------------------------------------------
+# Restore training from previous checkpoint
+# -----------------------------------------------
 parser.add_argument('--model_restore', default=None, type=str)
 parser.add_argument('--optimizer_restore', default=None, type=str)
 parser.add_argument('--scheduler_restore', default=None, type=str)
 parser.add_argument('--scaler_restore', default=None, type=str)
 parser.add_argument('--train_meta_restore', default=None, type=str)
 
+# -----------------------------------------------
 # Tag
+# -----------------------------------------------
 parser.add_argument('--tag', default='', type=str)
 
 
+# -----------------------------------------------
+# GPU
+# -----------------------------------------------
 try:
   GPUS = os.environ["CUDA_VISIBLE_DEVICES"]
   print(f"GPUS={GPUS}")
@@ -131,103 +142,9 @@ GPUS = GPUS.split(",")
 GPUS_COUNT = len(GPUS)
 
 
-class BalancedCellCountSampler(Sampler):
-  def __init__(self, args, num_cells, batch_size=3, threshold=70, seed=42):
-    self.args = args
-    self.num_cells = num_cells
-    self.batch_size = batch_size
-    self.threshold = threshold
-    self.seed = seed
-    self.indices = list(range(len(num_cells)))
-    random.seed(seed)
-
-  def __iter__(self):
-    # Separate indices
-    large_idxs = [i for i in self.indices if self.num_cells[i] >= self.threshold]
-    large_idxs.sort(key=lambda i: self.num_cells[i], reverse=True) # decreasing cell count
-    small_idxs = [i for i in self.indices if self.num_cells[i] < self.threshold]
-    small_idxs.sort(key=lambda i: self.num_cells[i])  # increasing cell count
-
-    if args.debug:
-      print(f'[ i ] Number of large indices: {len(large_idxs)}')
-      print(f'[ i ] Large indices: {large_idxs[:10]}')
-      print(f'[ i ] Large values: {[self.num_cells[i] for i in large_idxs[:10]]}')
-      print(f'[ i ] Number of small indices: {len(small_idxs)}')
-      print(f'[ i ] Small indices: {small_idxs[:10]}')
-      print(f'[ i ] Small values: {[self.num_cells[i] for i in small_idxs[:10]]}')
-
-    special_batches = []
-    used_small = set()
-    used_large = set()
-
-    # Form special batches
-    small_pointer = 0
-    for large_idx in large_idxs:
-      if small_pointer + 1 >= len(small_idxs):
-        break  # not enough smalls left
-      batch = [large_idx, small_idxs[small_pointer], small_idxs[small_pointer + 1]]
-      special_batches.append(batch)
-      used_large.add(large_idx)
-      used_small.update([small_idxs[small_pointer], small_idxs[small_pointer + 1]])
-      small_pointer += 2
-
-    # One batch print
-    if args.debug and len(special_batches) > 0:
-      print(f'[ i ] Special batch: {special_batches[-1]}')
-      print(f'[ i ] Special batch values: {[self.num_cells[i] for i in special_batches[-1]]}')
-
-    # Remaining indices (not already used)
-    remaining = list(set(self.indices) - used_large - used_small)
-    random.shuffle(remaining)
-
-    # Group remaining into batches
-    random_batches = []
-    for i in range(0, len(remaining), self.batch_size):
-      batch = remaining[i:i + self.batch_size]
-      if len(batch) == self.batch_size:
-        random_batches.append(batch)
-
-    # Print random batch
-    if args.debug:
-      print(f'[ i ] Number of random batches: {len(random_batches)}')
-      if len(random_batches) > 0:
-        print(f'[ i ] Random batch: {random_batches[-1]}')
-        print(f'[ i ] Random batch values: {[self.num_cells[i] for i in random_batches[-1]]}')
-
-    # Combine special and random batches
-    final_batches = special_batches + random_batches
-    random.shuffle(final_batches)
-
-    # Flatten to a list of indices
-    final_indices = [idx for batch in final_batches for idx in batch]
-
-    return iter(final_indices)
-
-  def __len__(self):
-    return len(self.indices)
-
-
-def collect_changeable_number_of_cells(batch):
-    # Desempacota o batch
-    ipts, lbls, img_lbls, conf_lbls, conf_img_lbls, cnts = zip(*batch)
-
-    # Concatena células (ex: ipt = [tensor(C_i) for i in batch] -> tensor(C_total, ...))
-    ipts = torch.cat(ipts, dim=0)
-    lbls = torch.cat(lbls, dim=0)
-    conf_lbls = torch.cat(conf_lbls, dim=0)
-
-    # lbls geralmente são rótulos da imagem inteira (1 por imagem), então pode ser empilhado
-    img_lbls = torch.stack(img_lbls, dim=0)
-    conf_img_lbls = torch.stack(conf_img_lbls, dim=0)
-
-    # cnts indica quantas células por imagem — ex: [12, 8, 10] — mantido como tensor
-    cnts = torch.tensor(cnts)
-
-    return ipts, lbls, img_lbls, conf_lbls, conf_img_lbls, cnts
-
-
-def get_transformations(aug_yaml):
-    return A.load(aug_yaml, data_format='yaml')
+# -----------------------------------------------
+# Helper functions
+# -----------------------------------------------
 
 
 def validate_model(
@@ -334,7 +251,7 @@ def create_datasets(args: argparse.Namespace):
   ])
   if args.aug_yaml:
     print(f"Using augmentations from {args.aug_yaml}")
-    aug_tfms = get_transformations(args.aug_yaml)
+    aug_tfms = datasets.get_transformations(args.aug_yaml)
 
   # Check if training is confidence-aware
   if args.cell_conf_aware_training or \
@@ -354,7 +271,6 @@ def create_datasets(args: argparse.Namespace):
     cell_size=args.image_size,
     conf_aware=conf_aware_training,
     conf_path=args.conf_preds,
-    label_smoothing=args.label_smoothing,
     mode='train'
   )
 
@@ -368,7 +284,6 @@ def create_datasets(args: argparse.Namespace):
       cell_path=args.data_dir,
       cell_count=args.cell_count,
       cell_size=args.image_size,
-      label_smoothing=args.label_smoothing,
       mode='valid'
     )
 
@@ -385,7 +300,7 @@ def create_train_valid_dataloaders(args: argparse.Namespace):
     
     print(f'[ i ] Sampler threshold: {sampler_threshold}')
     
-    sampler = BalancedCellCountSampler(
+    sampler = datasets.BalancedCellCountSampler(
       args, num_cells, batch_size=args.batch_size,
       threshold=sampler_threshold, seed=args.sampler_seed)
     
@@ -393,7 +308,7 @@ def create_train_valid_dataloaders(args: argparse.Namespace):
       dataset=ts, 
       batch_size=args.batch_size,
       num_workers=args.num_workers,
-      collate_fn=collect_changeable_number_of_cells, 
+      collate_fn=datasets.collect_changeable_number_of_cells, 
       sampler=sampler, 
       drop_last=True, 
       pin_memory=False)
@@ -673,18 +588,9 @@ def reannotate_negative_labels(
     return cell_labels, image_labels
 
 
-def get_memory_usage_GB():
-    cpu_mem = psutil.virtual_memory()
-    cpu_mem_used = cpu_mem.used / (1024 ** 3)
-    cpu_mem_free = cpu_mem.available / (1024 ** 3)
-
-    gpu_mem_used = torch.cuda.memory_allocated(0) / (1024 ** 3)
-    gpu_mem_reserved = torch.cuda.memory_reserved(0) / (1024 ** 3)
-    gpu_mem_free = (
-        torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_reserved(0)
-    ) / (1024 ** 3)
-
-    return cpu_mem_used, cpu_mem_free, gpu_mem_used, gpu_mem_reserved, gpu_mem_free
+def smooth_labels(y, smoothing=0.1):
+    n = y.size(1)
+    return (1 - smoothing) * y + smoothing / n
 
 
 if __name__ == '__main__':
@@ -715,7 +621,7 @@ if __name__ == '__main__':
     CLASS_WEIGHT = None
 
   # Positive weight for cell classification
-  pos_weight = (torch.ones(19) / args.cell_pos_weight).to(DEVICE)
+  pos_weight = torch.tensor([args.cell_pos_weight] * 19).to(DEVICE)
   print(f"[ i ] Cell positive weight: {pos_weight}")
 
   # -----------------------------------------------
@@ -855,6 +761,13 @@ if __name__ == '__main__':
         images, 
         n_cells, 
         cell_logits_to_image_logits=args.cell_logits_to_image_logits)
+      
+      # -----------------------------------------------
+      # Label smoothing 
+      # -----------------------------------------------
+      if args.label_smoothing > 0:
+        cell_labels = smooth_labels(cell_labels, args.label_smoothing)
+        image_labels = smooth_labels(image_labels, args.label_smoothing)
 
       # -----------------------------------------------
       # Calculate losses

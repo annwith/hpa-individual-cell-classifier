@@ -2,9 +2,25 @@
 # author : Sanghyeon Jo <josanghyeokn@gmail.com>
 
 import numpy as np
+import psutil
+import torch
 
 from tools.ai.torch_utils import calculate_parameters
 from tools.general.txt_utils import add_txt
+
+
+def get_memory_usage_GB():
+    cpu_mem = psutil.virtual_memory()
+    cpu_mem_used = cpu_mem.used / (1024 ** 3)
+    cpu_mem_free = cpu_mem.available / (1024 ** 3)
+
+    gpu_mem_used = torch.cuda.memory_allocated(0) / (1024 ** 3)
+    gpu_mem_reserved = torch.cuda.memory_reserved(0) / (1024 ** 3)
+    gpu_mem_free = (
+        torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_reserved(0)
+    ) / (1024 ** 3)
+
+    return cpu_mem_used, cpu_mem_free, gpu_mem_used, gpu_mem_reserved, gpu_mem_free
 
 
 def log_config(args, title=None, print_fn=print):

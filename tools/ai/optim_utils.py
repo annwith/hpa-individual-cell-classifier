@@ -154,6 +154,10 @@ def get_regular_optimizer(
         raise NotImplementedError(f"Optimizer {algorithm} not implemented.")
 
 
+def get_learning_rate_from_optimizer(optimizer):
+  return optimizer.param_groups[0]['lr']
+
+
 def linear_schedule(step, max_step, a_0=0., a_n=1.0, schedule=1.0, constraint=min):
   if schedule == 0:
     return a_n
