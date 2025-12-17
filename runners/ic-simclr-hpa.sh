@@ -43,7 +43,7 @@ DATA_DIR=$DATASETS_DIR/input/train_cell_256
 IMAGE_SIZE=256
 SAMPLER=default
 
-WEAKLY_SUPERVISED=false
+WEAKLY_SUPERVISED=true
 TEMPERATURE=0.07
 
 # end region
@@ -158,7 +158,7 @@ train() {
 
 # region Classification Experiments
 
-EID=-test  # Experiment ID
+EID=-teste  # Experiment ID
 TAG=$DATASET-${ARCH}-lr${LR}-b${BATCH}-$AUG-$OPTIMIZER-eid$EID
 
 train

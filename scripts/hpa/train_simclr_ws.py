@@ -31,33 +31,92 @@ from tools.ai.optim_utils import *
 from tools.ai.log_utils import *
 from tools.general.time_utils import *
 
-
+'''
 class SupConLoss(nn.Module):
-    def __init__(self, temperature=0.07):
+    def __init__(self, temperature=0.07, alpha=0.8, use_hard_mask=True, class_weights=None):
         super(SupConLoss, self).__init__()
         self.temperature = temperature
+        self.alpha = alpha
+        self.use_hard_mask = use_hard_mask
+        self.class_weights = class_weights
 
     def forward(self, features, labels):
         device = features.device
         features = F.normalize(features, dim=1)
 
-        # similarity matrix
-        similarity = torch.div(
-            torch.matmul(features, features.T),
-            self.temperature
-        )
+        # ------------------------------------------------------------------
+        # Algumas ideias:
 
-        # remove self-comparisons
-        logits_mask = torch.ones_like(similarity) - torch.eye(features.size(0), device=device)
+        # O batch tem que ser representativo
+        # Pensar sobre isso porque o nosso batch é de poucas imagens, mas muitas células
+        # Acho interessante mudar isso. Até pensando no treinamento sem essa loss.
+        
+        # Label smoothing no treinamento supervisionado
+        
+        # Use class weights from hyperparameter or
+        # calculate on the fly from batch or not use class weights at all
+        # Do not know yet if I am going to do that, since we normalize the mask later
 
-        # build mask: samples are positives if they share >= 1 label
-        mask = (labels @ labels.T) > 0   # (batch_size, batch_size)
+        # ------------------------------------------------------------------
 
-        # exponentiated similarities (ignoring self-comparisons)
-        exp_sim = torch.exp(similarity) * logits_mask
+        # 1. Normalização L2 das features (garante z_i . z_p = cosseno)
+        # features = F.normalize(features, dim=1)
 
-        # log-probabilities
-        log_prob = similarity - torch.log(exp_sim.sum(1, keepdim=True) + 1e-9)
+        # ------------------------------------------------------------------
+        # TERMO DO NUMERADOR: z_i . z_p / temperature
+        # ------------------------------------------------------------------
+
+        # Similarity matrix
+        # z_i . z_p / temperature
+        similarity = torch.div(features @ features.T, self.temperature)
+
+        # ------------------------------------------------------------------
+        # TERMO DO DENOMINADOR: Soma sobre a em A(i)
+        # A fórmula diz para somar tudo EXCETO o próprio i (diagonal).
+        # A fórmula diz isso onde pelo amor de deus?
+        # ------------------------------------------------------------------
+
+        # Estabilidade numérica: subtrai o máximo antes de exp (shift trick)
+        # sim_max, _ = torch.max(similarity, dim=1, keepdim=True)
+        # similarity = similarity - sim_max.detach()
+        
+        # Calcula o e^(sim)
+        exp_sim = torch.exp(similarity)
+
+        # Hard mask
+        if self.use_hard_mask:
+            # hard queries qlevel or hyperparameter  (99% quantile?)
+            # delta variável, começar em 50% ou outro valor por exemplo e ir aumentando
+            # quantile é custoso - ordenação
+            # mesmo se eu usar o quantile, eu tenho que aumentar o alpha com o tempo?
+            delta = torch.quantile(exp_sim, [1-self.alpha, self.alpha])
+            hard_mask = ((exp_sim >= delta[0]) & (exp_sim <= delta[1])).float().detach()
+            exp_sim = exp_sim * hard_mask
+
+        # Mask to remove self-comparisons (why remove self-comparisons?)
+        logits_mask = 1 - torch.eye(features.size(0), device=device)
+        exp_sim = exp_sim * logits_mask
+
+        # Soma do denominador (Sum exp(...))
+        denominator_sum = exp_sim.sum(1, keepdim=True)
+
+        # 3. Log-Probabilidade
+        # log( exp(s) / sum(exp) ) = s - log(sum)
+        # Isso calcula o termo log(...) inteiro da fórmula para TODOS os pares
+        # Porque tem esse 1e-9? Evitar log(0)
+        log_prob = similarity - torch.log(denominator_sum + 1e-9)
+        
+        # ------------------------------------------------------------------
+        # TERMO DA MÉDIA SOBRE POSITIVOS
+        # ------------------------------------------------------------------
+
+        # Build mask: samples are positives if they share >= 1 label
+        # Primeira alternativa
+        # mask = (labels @ labels.T) > 0  
+        
+        # Segunda alternativa
+        mask = (labels @ labels.T)
+        mask = mask / mask.sum(1, keepdim=True)  # Normalize
 
         # mean log-prob over positives
         # (avoid division by zero with clamp)
@@ -65,6 +124,76 @@ class SupConLoss(nn.Module):
 
         # final loss
         loss = -mean_log_prob_pos.mean()
+
+        return loss 
+'''
+
+class SupConLoss(nn.Module):
+    def __init__(self, temperature=0.07, alpha=0.8, use_hard_mask=True):
+        super(SupConLoss, self).__init__()
+        self.temperature = temperature
+        self.alpha = alpha
+        self.use_hard_mask = use_hard_mask
+
+    def forward(self, features, labels):
+        device = features.device
+        features = F.normalize(features, dim=1)
+
+        # ------------------------------------------------------------------
+        # TERMO DO NUMERADOR: z_i . z_p / temperature
+        # ------------------------------------------------------------------
+
+        # Similarity matrix
+        # z_i . z_p / temperature
+        similarity = torch.div(features @ features.T, self.temperature)
+
+        # ------------------------------------------------------------------
+        # TERMO DO DENOMINADOR: Soma sobre a em A(i)
+        # A fórmula diz para somar tudo EXCETO o próprio i (diagonal).
+        # A fórmula diz isso onde pelo amor de deus?
+        # ------------------------------------------------------------------
+
+        # Estabilidade numérica: subtrai o máximo antes de exp (shift trick)
+        sim_max, _ = torch.max(similarity, dim=1, keepdim=True)
+        similarity = similarity - sim_max.detach()
+        
+        # Calcula o e^(sim)
+        exp_sim = torch.exp(similarity)
+
+        # Mask to remove self-comparisons
+        logits_mask = 1 - torch.eye(features.size(0), device=device)
+        exp_sim = exp_sim * logits_mask
+
+        # Hard mask
+        if self.use_hard_mask:
+            q = torch.tensor([1 - self.alpha, self.alpha], device=exp_sim.device)
+            delta = torch.quantile(exp_sim, q)
+            hard_mask = ((exp_sim >= delta[0]) & (exp_sim <= delta[1])).float().detach()
+            exp_sim = exp_sim * hard_mask
+
+        # Soma do denominador (Sum exp(...))
+        denominator_sum = exp_sim.sum(1, keepdim=True)
+
+        # 3. Log-Probabilidade
+        # log( exp(s) / sum(exp) ) = s - log(sum)
+        # Isso calcula o termo log(...) inteiro da fórmula para TODOS os pares
+        # Porque tem esse 1e-9? Evitar log(0)
+        log_prob = similarity - torch.log(denominator_sum + 1e-9)
+        
+        # ------------------------------------------------------------------
+        # TERMO DA MÉDIA SOBRE POSITIVOS
+        # ------------------------------------------------------------------
+        
+        mask = (labels @ labels.T)
+        mask = mask / mask.sum(1, keepdim=True)  # Normalize
+
+        # mean log-prob over positives
+        # (avoid division by zero with clamp)
+        mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1).clamp(min=1)
+
+        # final loss
+        loss = -mean_log_prob_pos.mean()
+
         return loss
 
 
@@ -261,6 +390,7 @@ def build_simclr_model(
   if args.backbone_weights == None:
     print("[ i ] Initializing backbone weights.")
     backbone.initialize(backbone.modules())
+  print(f"[ i ] Backbone output dimension: {backbone.out_dim}")
 
   projection_head = ProjectionHead(
     in_dim=backbone.out_dim, 
