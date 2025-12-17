@@ -635,9 +635,9 @@ if __name__ == '__main__':
   # Create directory model
   if os.path.isdir('./experiments/models/' + TAG):
     print(f"Model directory already exists: ./experiments/models/{TAG}")
-    # raise FileExistsError(
-    #   f"Model directory already exists: ./experiments/models/{TAG}. "
-    #   "Please change the tag or remove the existing directory.")
+    raise FileExistsError(
+      f"Model directory already exists: ./experiments/models/{TAG}. "
+      "Please change the tag or remove the existing directory.")
   
   # Set model directory
   model_dir = create_directory('./experiments/models/' + TAG + '/')
@@ -825,7 +825,6 @@ if __name__ == '__main__':
       # Update EMA model
       if args.ema:
         optimizer_global_step = (step + 1) // args.accumulate_steps
-        print(f"[ i ] Updating EMA model at step {optimizer_global_step}")
         ema_mod.copy(model, ema_model, optimizer_global_step,
                     args.ema, args.ema_decay, args.ema_steps, ema_warmup_steps)
     
@@ -879,13 +878,24 @@ if __name__ == '__main__':
         'val_loss': val_loss,
         'val_classification_report': wandb.Table(dataframe=report_df)
       }
+
+      if args.ema:
+        ema_loss, ema_report_df = validate_model(
+          ema_mod.inference_model(
+            model, ema_model, optimizer_global_step, args.ema, ema_warmup_steps),
+          valid_loader, args)
+        val_data.update({
+          'ema_val_loss': ema_loss,
+          'ema_val_classification_report': wandb.Table(dataframe=ema_report_df)
+        })
+
       wb_logs = {f"val/{k}": v for k, v in val_data.items()}
       wb_logs["val/epoch"] = epoch
       wandb.log(wb_logs, commit=True)
       
       print(
-        'step={iteration:,} '
-        'val_loss={val_loss:.4f} '
+        f'step={step + 1} '
+        f'val_loss={val_loss:.4f} '
       )
       print(report_df)
       
