@@ -281,7 +281,10 @@ class Backbone(nn.Module):
     scratch_parameters = set()
     all_parameters = set()
 
+    module_names = {id(m): n for n, m in self.named_modules()}
+
     for layer in self.from_scratch_layers:
+      layer_name = module_names.get(id(layer), "unknown_layer")
       for name, param in layer.named_parameters():
         if param in all_parameters:
           continue
@@ -295,7 +298,7 @@ class Backbone(nn.Module):
             continue
 
         idx = 2 if "weight" in name else 3
-        names[idx].append(name)
+        names[idx].append(layer_name + "." + name)
         groups[idx].append(param)
 
     for name, param in self.named_parameters():
@@ -426,12 +429,7 @@ class HPAClassifier(Backbone):
     )
 
     self.num_classes = num_classes
-
     cin = self.backbone.outplanes
-    self.classifier = nn.Conv2d(cin, num_classes, 1, bias=False)
-
-    self.from_scratch_layers.extend([self.classifier])
-    self.initialize([self.classifier])
 
     self.pool = GeM()
     self.flatten = nn.Flatten()
@@ -443,6 +441,9 @@ class HPAClassifier(Backbone):
     self.last_linear_image = nn.Linear(
       in_features=cin, 
       out_features=num_classes)
+    
+    self.from_scratch_layers.extend([self.last_linear_cell, self.last_linear_image])
+    self.initialize([self.last_linear_cell, self.last_linear_image])
 
   def forward(self, x, cnt=16, with_cam=False, cell_logits_to_image_logits=False):
     if with_cam:
@@ -527,6 +528,8 @@ class NegativeClassifier(Backbone):
 
 class ProjectionHead(nn.Module):
   """A simple non-linear projection head for SimCLR."""
+  # Testar com hidden_dim=256/384 (outros)
+  # Menos classes que o imagenet
   def __init__(self, in_dim, out_dim, hidden_dim=2048):
     super().__init__()
     self.block = nn.Sequential(
@@ -548,12 +551,15 @@ class SimCLRModel(nn.Module):
   def forward(self, x):
     features = self.backbone(x)
     feature_map = features[-1] if isinstance(features, tuple) else features
+    print(f"Feature map shape: {feature_map.shape}")
     
     # 1. Apply Global Average Pooling
     pooled_features = F.adaptive_avg_pool2d(feature_map, (1, 1)) # Shape becomes (batch_size, 2048, 1, 1)
-    
+    print(f"Pooled features shape: {pooled_features.shape}")
+
     # 2. Flatten the features into a vector
     flattened_features = torch.flatten(pooled_features, 1) # Shape becomes (batch_size, 2048)
+    print(f"Flattened features shape: {flattened_features.shape}")
 
     # Now, feed the correctly shaped 2D vector to the projection head
     projections = self.projection_head(flattened_features)
@@ -562,3 +568,103 @@ class SimCLRModel(nn.Module):
   
   def parameters(self):
     return list(self.backbone.parameters()) + list(self.projection_head.parameters())
+  
+
+class JointSupConClassifier(nn.Module):
+  def __init__(self, num_classes, backbone, projection_head):
+      super(JointSupConClassifier, self).__init__()
+      self.backbone = backbone
+      self.projection_head = projection_head
+      self.num_classes = num_classes
+
+      cin = self.backbone.out_dim
+      print(f"Backbone output dimension: {cin}")
+
+      self.pool = GeM()
+      self.flatten = nn.Flatten()
+      self.dropout = nn.Dropout(p=0.5)
+
+      self.last_linear_cell = nn.Linear(
+        in_features=cin, 
+        out_features=num_classes)
+      self.last_linear_image = nn.Linear(
+        in_features=cin, 
+        out_features=num_classes)
+      
+      self.from_scratch_layers = [self.last_linear_cell, self.last_linear_image]
+      self.from_scratch_layers.append(self.projection_head)
+      # self.initialize(self.from_scratch_layers)
+
+  def forward(self, x, cnt=16, cell_logits_to_image_logits=False):
+    features = self.backbone(x)
+    feature_map = features[-1] if isinstance(features, tuple) else features
+    
+    # SupCon part
+    pooled_features = F.adaptive_avg_pool2d(feature_map, (1, 1)) # Shape becomes (batch_size, 2048, 1, 1)
+    flattened_features = torch.flatten(pooled_features, 1) # Shape becomes (batch_size, 2048)
+    projections = self.projection_head(flattened_features)
+
+    # Classifier part
+    pooled = self.flatten(self.pool(feature_map))
+
+    if cell_logits_to_image_logits:
+      cell_logits = self.last_linear_cell(pooled)
+      cell_logits_split = torch.split(cell_logits, cnt.tolist())
+      image_logits = torch.stack([p.max(0).values for p in cell_logits_split])
+
+      return cell_logits, image_logits, projections
+
+    pooled_split = torch.split(pooled, cnt.tolist())
+    pooled_per_img = torch.stack([p.max(0)[0] for p in pooled_split])
+
+    cell_logits = self.last_linear_cell(pooled)
+    image_logits = self.last_linear_image(pooled_per_img)
+
+    return cell_logits, image_logits, projections
+  
+  def get_parameter_groups(self, exclude_partial_names=(), with_names=False):
+    names = ([], [], [], [])
+    groups = ([], [], [], [])
+
+    scratch_parameters = set()
+    all_parameters = set()
+
+    module_names = {id(m): n for n, m in self.named_modules()}
+
+    for layer in self.from_scratch_layers:
+      layer_name = module_names.get(id(layer), "unknown_layer")
+      for name, param in layer.named_parameters():
+        if param in all_parameters:
+          continue
+        scratch_parameters.add(param)
+        all_parameters.add(param)
+
+        if not param.requires_grad:
+          continue
+        for p in exclude_partial_names:
+          if p in name:
+            continue
+
+        idx = 2 if "weight" in name else 3
+        names[idx].append(layer_name + "." + name)
+        groups[idx].append(param)
+
+    for name, param in self.named_parameters():
+      if param in all_parameters:
+        continue
+      all_parameters.add(param)
+
+      if not param.requires_grad or param in scratch_parameters:
+        continue
+      for p in exclude_partial_names:
+        if p in name:
+          continue
+
+      idx = 0 if "weight" in name else 1
+      names[idx].append(name)
+      groups[idx].append(param)
+
+    if with_names:
+      return groups, names
+
+    return groups

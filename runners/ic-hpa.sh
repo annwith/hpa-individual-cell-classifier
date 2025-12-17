@@ -37,7 +37,7 @@ DEVICE='cuda:0'
 DATASET=hpa2nd     # HPA Single Cell Classification
 TRAIN_CSV=$WORK_DIR/datasets/split/256_train+ext+rare.csv
 DATA_DIR=$DATASETS_DIR/input/train_cell_256
-PERFORM_VALIDATION=false
+PERFORM_VALIDATION=true
 VAL_FOLD=0
 
 IMAGE_SIZE=256
@@ -113,6 +113,16 @@ LR=0.0002
 LR_ALPHA_SCRATCH=1.0
 LR_ALPHA_BIAS=1.0
 WD=0.0
+
+# SupCon parameters
+IS_SUPCONCLASSIFIER_MODEL=true
+BCE_LOSS_WEIGHT=1.0
+SUPCON_LOSS_WEIGHT=1.0
+SUPCON_TEMPERATURE=0.07
+SUPCON_ALPHA=0.8
+SUPCON_USE_HARD_MASK=true
+PROJECTION_DIM=128
+HIDDEN_DIM=2048
 
 WARMUP_EPOCHS=1
 WARMUP_START_FACTOR=0.01
@@ -198,6 +208,14 @@ train() {
     --ema_warmup $EMA_WARMUP \
     --ema_steps $EMA_STEPS \
     --ema_decay $EMA_DECAY \
+    --is_supconclassifier_model $IS_SUPCONCLASSIFIER_MODEL \
+    --bce_loss_weight $BCE_LOSS_WEIGHT \
+    --supcon_loss_weight $SUPCON_LOSS_WEIGHT \
+    --supcon_temperature $SUPCON_TEMPERATURE \
+    --supcon_alpha $SUPCON_ALPHA \
+    --supcon_use_hard_mask $SUPCON_USE_HARD_MASK \
+    --projection_dim $PROJECTION_DIM \
+    --hidden_dim $HIDDEN_DIM \
     --cell_conf_aware_training $CELL_CONF_AWARE_TRAINING \
     --image_conf_aware_training $IMAGE_CONF_AWARE_TRAINING \
     --conf_preds $CONF_PREDS \

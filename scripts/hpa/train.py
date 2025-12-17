@@ -20,6 +20,7 @@ cv2.setNumThreads(0)
 import datasets
 from datasets.hpa import ConfAwareHPADataset
 
+from train_simclr_ws import SupConLoss
 from core.networks import *
 import core.vision_transformer as vits
 from tools.ai import ema as ema_mod
@@ -109,6 +110,18 @@ parser.add_argument('--print_ratio', default=0.1, type=float)
 parser.add_argument('--monitor_memory_usage', default=False, type=str2bool)
 
 # -----------------------------------------------
+# SupCon hyperparameters
+# -----------------------------------------------
+parser.add_argument('--is_supconclassifier_model', default=False, type=str2bool)
+parser.add_argument('--supcon_temperature', default=0.07, type=float)
+parser.add_argument('--supcon_alpha', default=0.8, type=float)
+parser.add_argument('--supcon_use_hard_mask', default=True, type=str2bool)
+parser.add_argument('--bce_loss_weight', default=1.0, type=float)
+parser.add_argument('--supcon_loss_weight', default=1.0, type=float)
+parser.add_argument('--projection_dim', default=128, type=int)
+parser.add_argument('--hidden_dim', default=2048, type=int)
+
+# -----------------------------------------------
 # Normalization and data augmentation settings
 # -----------------------------------------------
 parser.add_argument('--normalization_mean', default='0.485,0.456,0.406,0.406', type=str2floatlist)
@@ -177,7 +190,10 @@ def validate_model(
 
             # Get logits and loss
             with torch.amp.autocast(device_type=DEVICE.type):
-                _, output = model(ipt, n_cell)
+                if args.is_supconclassifier_model:
+                    _, output, _ = model(ipt, n_cell)
+                else:
+                    _, output = model(ipt, n_cell)
                 loss = F.binary_cross_entropy_with_logits(
                     output, img_lbl,
                     reduction='none')
@@ -341,6 +357,42 @@ def create_train_valid_dataloaders(args: argparse.Namespace):
 
 
 def create_model(args: argparse.Namespace):
+  # SupConClassifier model
+  if args.is_supconclassifier_model:
+      print("Creating SupConClassifier model.")
+      if (args.backbone_weights).lower() == "none":
+        args.backbone_weights = None
+
+      backbone = Backbone(
+        model_name=args.architecture,
+        channels=4,
+        weights=args.backbone_weights,
+        mode=args.mode,
+        dilated=args.dilated,
+        trainable_stem=args.trainable_stem,
+        trainable_backbone=args.trainable_backbone,
+      )
+      print(f"[ i ] Backbone output dimension: {backbone.out_dim}")
+      if args.backbone_weights == None:
+        print("[ i ] Initializing backbone weights.")
+        backbone.initialize(backbone.modules())
+
+      projection_head = ProjectionHead(
+        in_dim=backbone.out_dim, 
+        out_dim=args.projection_dim, 
+        hidden_dim=args.hidden_dim)
+      
+      model = JointSupConClassifier(
+        num_classes=19,
+        backbone=backbone,
+        projection_head=projection_head)
+      
+      if args.model_restore:
+        print(f"[ i ] Restoring weights from previous training {args.model_restore}")
+        model.load_state_dict(torch.load(args.model_restore), strict=True)
+
+      return model
+
   # ViT-based model
   if 'vit' in args.architecture:
     backbone = vits.vit_small(
@@ -489,7 +541,7 @@ def create_optimizer(
     optimizer.load_state_dict(torch.load(args.optimizer_restore))
     print("[ i ] Optimizer LR:", optimizer.param_groups[0]["lr"])
   
-  log_opt_params("Vanilla", param_names)
+  log_opt_params("Vanilla", param_names, verbose=2)
   
   return optimizer
 
@@ -643,6 +695,14 @@ if __name__ == '__main__':
   model_dir = create_directory('./experiments/models/' + TAG + '/')
   model_path = model_dir + f'model.pth'
 
+  # Define SupCon loss if needed
+  if args.is_supconclassifier_model:
+    print(f"[ i ] Using SupConClassifier architecture.")
+    supcon_loss = SupConLoss(
+      temperature=args.supcon_temperature,
+      alpha=args.supcon_alpha,
+      use_hard_mask=args.supcon_use_hard_mask)
+
   # -----------------------------------------------
   # Dataset
   # -----------------------------------------------
@@ -757,10 +817,16 @@ if __name__ == '__main__':
       # -----------------------------------------------
       # Forward pass
       # -----------------------------------------------
-      cell_logits, image_logits = model(
-        images, 
-        n_cells, 
-        cell_logits_to_image_logits=args.cell_logits_to_image_logits)
+      if args.is_supconclassifier_model:
+        cell_logits, image_logits, embeddings = model(
+          images, 
+          n_cells, 
+          cell_logits_to_image_logits=args.cell_logits_to_image_logits)
+      else:
+        cell_logits, image_logits = model(
+          images, 
+          n_cells, 
+          cell_logits_to_image_logits=args.cell_logits_to_image_logits)
       
       # -----------------------------------------------
       # Label smoothing 
@@ -806,8 +872,12 @@ if __name__ == '__main__':
       if not len(weighted_img_loss.shape) == 0:
           weighted_img_loss = weighted_img_loss.mean()
       
-      # Calculate total loss
+      # Calculate total BCE loss
       loss = weighted_cell_loss * args.cell_loss_weight + weighted_img_loss
+
+      if args.is_supconclassifier_model:
+        supcon_loss_value = supcon_loss(embeddings, cell_labels)
+        loss = loss * args.bce_loss_weight + supcon_loss_value * args.supcon_loss_weight
 
     # -----------------------------------------------
     # Backward pass and optimization step
