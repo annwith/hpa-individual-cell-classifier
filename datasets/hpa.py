@@ -8,137 +8,98 @@ from skimage.io import imread
 from torchvision.transforms import Compose, ToTensor, Normalize
 
 
-class HPADataset(Dataset):
-    NAME: str = "hpa"
-
+class HPABaseline(Dataset):
     def __init__(
         self, 
         df, 
-        tfms=None,
-        cell_path=None,
-        cell_count=16,
-        cell_size=256,
+        base_tfms=None,
+        aug_tfms=None,
+        image_path=None,
+        image_size=512,
+        conf_aware=False,
+        conf_path=None,
         mode='train'):
 
-        """
-        Custom PyTorch dataset for loading images and labels from a DataFrame.
-
-        Args:
-            df (pd.DataFrame): DataFrame containing image filenames and labels.
-            tfms (callable, optional): Transformations to apply to images.
-            cell_path (str): Path to the directory containing cell images.
-            cell_count (int): Number of cells to sample from each image.
-            cell_size (int): Size of the cell images.
-            mode (str): Mode of operation ('train' or 'valid').
-        """
-
-        # Store DataFrame and reset index for consistency
+        # Store variables
         self.df = df.reset_index(drop=True)
-        self.transform = tfms
-        self.cell_path = cell_path
-        self.cell_count = cell_count
-        self.cell_size = cell_size
+        self.base_transform = base_tfms
+        self.aug_transform = aug_tfms
+        self.image_path = image_path
+        self.image_size = image_size
+        self.conf_aware = conf_aware
+        self.conf_path = conf_path
         self.mode = mode
 
-        # Define image normalization (expects 4 channels)
-        self.tensor_tfms = Compose([
-            ToTensor(),
-            Normalize(mean=[0.485, 0.456, 0.406, 0.406], std=[0.229, 0.224, 0.225, 0.225]),
-        ])
+        if conf_aware:
+            self.conf_df = pd.read_csv(conf_path)
+            self.conf_df = self.conf_df.reset_index(drop=True)
+            self.conf_df = self.conf_df.set_index('filename')
+            self.conf_cols = ['prob_{}'.format(i) for i in range(19)]
+        else:
+            self.conf_df = None
 
-        # Define label columns (19 classes)
-        self.cols = ['class{}'.format(i) for i in range(19)]
+        self.cols = ['class{}'.format(i) for i in range(19)]  # Target label column names
+
+
+    def get_labels(self):
+        """ Returns the labels of the dataset as a numpy array. """
+        labels = [row[self.cols].values.astype(np.float64) for index, row in self.df.iterrows()]
+        return np.array(labels)
+
 
     def __len__(self):
-        """Returns the number of samples in the dataset."""
         return len(self.df)
 
+
     def __getitem__(self, index):
-        """
-        Loads an image, applies transformations, and returns image tensor with labels.
+        row = self.df.loc[index]
 
-        Args:
-            index (int): Index of the sample.
-
-        Returns:
-            tuple: (batch, mask, label, raw_label) for training
-                   (batch, mask, label, raw_label, cnt) for validation
-        """
-        # Handle training samples
+        # -------- TRAIN MODE --------
         if self.mode == 'train':
-            row = self.df.loc[index]  # Get row from DataFrame
-            cnt = self.cell_count  # Max number of images per sample
+            # Load image
+            path = f'{self.image_path}/{row["ID"]}.png'
+            img = imread(path)
 
-            # Select a subset of images if more are available
-            if row['idx'] > cnt:
-                selected = random.sample([i for i in range(row['idx'])], cnt)
-            else:
-                selected = [i for i in range(row['idx'])]
+            # Apply optional image augmentations
+            if self.aug_transform is not None:
+                res = self.aug_transform(image=img)
+                img = res['image']
 
-            # Initialize batch tensors
-            batch = torch.zeros((cnt, 4, self.cell_size, self.cell_size))
-            mask = np.zeros((cnt))  # Binary mask (1 if image is present)
-            label = np.zeros((cnt, 19))  # Label array for the batch
+            # Ensure image has the correct size
+            if not img.shape[0] == self.image_size:
+                img = cv2.resize(img, (self.image_size, self.image_size))
 
-            # Iterate over selected images
-            for idx, s in enumerate(selected):
-                path = f'{self.cell_path}/{row["ID"]}_{s+1}.png'
-                img = imread(path)  # Read image
+            # Apply tensor conversion and normalization
+            img = self.base_transform(img)
 
-                # Apply transformations if provided
-                if self.transform is not None:
-                    res = self.transform(image=img)
-                    img = res['image']
+            # Store processed image and metadata
+            label = row[self.cols].values.astype(np.float64)
+            if self.conf_aware:
+                conf_row = self.conf_df.loc[row['ID']]
+                conf = conf_row[self.conf_cols].values.astype(np.float64)
+                return img, label, conf
 
-                # Resize if necessary
-                if not img.shape[0] == self.cell_size:
-                    img = cv2.resize(img, (self.cell_size, self.cell_size))
+            return img, label
 
-                # Convert image to tensor and normalize
-                img = self.tensor_tfms(img)
-                batch[idx, :, :, :] = img  # Store in batch tensor
-                mask[idx] = 1  # Mark image as present
-                label[idx] = row[self.cols].values.astype(np.float64)  # Store label
-
-            return batch, mask, label, row[self.cols].values.astype(np.float64)
-
-        # Handle validation samples
+        # -------- VALIDATION MODE --------
         if self.mode == 'valid':
-            row = self.df.loc[index]
-            selected = [i for i in range(row['idx'])]  # Use all available images
-            cnt = row['idx']  # Number of images
+            path = f'{self.image_path}/{row["ID"]}.png'
+            img = imread(path)
 
-            # Initialize batch tensors
-            batch = torch.zeros((cnt, 4, self.cell_size, self.cell_size))
-            mask = np.zeros((cnt))
-            label = np.zeros((cnt, 19))
+            if self.aug_transform is not None:
+                res = self.aug_transform(image=img)
+                img = res['image']
 
-            # Iterate over images
-            for idx, s in enumerate(selected):
-                path = f'{self.cell_path}/{row["ID"]}_{s+1}.png'
-                img = imread(path)
+            if not img.shape[0] == self.image_size:
+                img = cv2.resize(img, (self.image_size, self.image_size))
 
-                # Apply transformations if provided
-                if self.transform is not None:
-                    res = self.transform(image=img)
-                    img = res['image']
+            img = self.base_transform(img)
+            label = row[self.cols].values.astype(np.float64)
 
-                # Resize if necessary
-                if not img.shape[0] == self.cell_size:
-                    img = cv2.resize(img, (self.cell_size, self.cell_size))
-
-                # Convert image to tensor and normalize
-                img = self.tensor_tfms(img)
-                batch[idx, :, :, :] = img
-                mask[idx] = 1
-                label[idx] = row[self.cols].values.astype(np.float64)
-
-            return batch, mask, label, row[self.cols].values.astype(np.float64), cnt
-
+            return img, label
+            
 
 class ConfAwareHPADataset(Dataset):
-    NAME: str = "hpa"
-
     def __init__(
         self, 
         df, 
@@ -408,8 +369,6 @@ class NegativeClassifierDataset(Dataset):
         
 
 class SimCLRDataset(Dataset):
-    NAME: str = "hpa"
-
     def __init__(
         self, 
         df, 
