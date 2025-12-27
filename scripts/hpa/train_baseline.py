@@ -5,7 +5,7 @@ import wandb
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report, f1_score
 
 import torch
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
@@ -148,6 +148,25 @@ GPUS_COUNT = len(GPUS)
 # -----------------------------------------------
 
 
+def find_best_thresholds(y_true, y_pred):
+    n_classes = y_true.shape[1]
+    thresholds = []
+
+    for c in range(n_classes):
+        best_t, best_f1 = 0.5, 0.0
+        for t in np.linspace(0.05, 0.95, 50):
+            f1 = f1_score(
+              y_true[:, c], 
+              (y_pred[:, c] > t).astype(int),
+              zero_division=0)
+            if f1 > best_f1:
+                best_f1 = f1
+                best_t = t
+        thresholds.append(best_t)
+
+    return np.array(thresholds)
+
+
 def validate_model(
     model, 
     valid_dl, 
@@ -160,8 +179,7 @@ def validate_model(
     model.eval()
 
     # Set tqdm progress bar
-    tq = tqdm(valid_dl, mininterval=2.0)
-
+    tq = tqdm(valid_dl, "Validation", mininterval=1.0, ncols=80)
     with torch.no_grad():
         results = []
         losses, predicted, truth = [], [], []
@@ -202,7 +220,8 @@ def validate_model(
         val_loss = np.array(losses).mean()
 
         # Classification report
-        predicted_binary = (predicted > 0.5).astype(int)
+        thresholds = find_best_thresholds(truth, predicted)
+        predicted_binary = (predicted > thresholds).astype(int)
         report = classification_report(
             truth, 
             predicted_binary, 
@@ -449,6 +468,7 @@ if __name__ == '__main__':
   TAG = args.tag
   SEED = args.seed
   SAVE_EVERY_EPOCH = False
+  SAVE_BEST_VAL_LOSS = True
   set_seed(SEED)
 
   # Set device
@@ -481,13 +501,13 @@ if __name__ == '__main__':
   # Create directory model
   if os.path.isdir('./experiments/models/' + TAG):
     print(f"Model directory already exists: ./experiments/models/{TAG}")
-    # raise FileExistsError(
-    #   f"Model directory already exists: ./experiments/models/{TAG}. "
-    #   "Please change the tag or remove the existing directory.")
+    raise FileExistsError(
+      f"Model directory already exists: ./experiments/models/{TAG}. "
+      "Please change the tag or remove the existing directory.")
   
   # Set model directory
   model_dir = create_directory('./experiments/models/' + TAG + '/')
-  model_path = model_dir + f'model.pth'
+  model_path = model_dir + f'model-f{args.val_fold}.pth'
 
   # Define SupCon loss if needed
   if args.is_supconclassifier_model:
@@ -571,10 +591,15 @@ if __name__ == '__main__':
   # Train
   # -----------------------------------------------
 
+  best_val_loss = float('inf')
   train_meter = MetricsContainer(['loss'])
   train_timer = Timer()
 
-  tqdm_bar = tqdm(range(step_init, step_max), 'Training', mininterval=2.0)
+  tqdm_bar = tqdm(
+    range(step_init, step_max), 
+    'Training', 
+    mininterval=5.0, 
+    dynamic_ncols=True)
   for step in tqdm_bar:
     if args.image_conf_aware_training:
       images, image_labels, image_confs = train_iterator.get()
@@ -657,20 +682,25 @@ if __name__ == '__main__':
     is_val_step = (step + 1) % step_val == 0
 
     epoch_loss = train_meter.get()
-    learning_rate = float(get_learning_rate_from_optimizer(optimizer))
+    learning_rate = float(get_learning_rate_from_optimizer(optimizer))    
 
-    if args.monitor_memory_usage:
-      cpu_mem_used, cpu_mem_free, gpu_mem_used, gpu_mem_reserved, gpu_mem_free = get_memory_usage_GB()
-      tqdm_bar.set_description(
-        f"[epoch={epoch} loss={epoch_loss:.5f} "
-        f"lr={learning_rate:.5f} cpu={cpu_mem_used:.2f}/{cpu_mem_free:.2f} GB "
-        f"gpu={gpu_mem_used:.2f}/{gpu_mem_reserved:.2f}/{gpu_mem_free:.2f} GB]")
-    else:
-      tqdm_bar.set_description(
-        f"[epoch={epoch} loss={epoch_loss:.5f} "
-        f"lr={learning_rate:.5f}]")
+    if is_log_step:   
+      if args.monitor_memory_usage:
+        cpu_mem_used, cpu_mem_free, gpu_mem_used, gpu_mem_reserved, gpu_mem_free = get_memory_usage_GB()
+        tqdm_bar.set_postfix({
+          "epoch": epoch,
+          "loss": f"{epoch_loss:.5f}",
+          "lr": f"{learning_rate:.5f}",
+          "cpu": f"{cpu_mem_used:.1f}/{cpu_mem_free:.1f}GB",
+          "gpu": f"{gpu_mem_used:.1f}/{gpu_mem_reserved:.1f}/{gpu_mem_free:.1f}GB"
+        })
+      else:
+        tqdm_bar.set_postfix({
+            "epoch": epoch,
+            "loss": f"{epoch_loss:.5f}",
+            "lr": f"{learning_rate:.5f}"
+        })   
 
-    if is_log_step:      
       data = {
         'iteration': step + 1,
         'learning_rate': learning_rate,
@@ -721,7 +751,6 @@ if __name__ == '__main__':
     if is_val_step:
       if SAVE_EVERY_EPOCH:
         model_path = model_dir + f'model-f{args.val_fold}-e{epoch}.pth'
-
       if args.ema:
         print(f"[ i ] Saving EMA model to {model_path}")
         save_model(
@@ -731,6 +760,19 @@ if __name__ == '__main__':
       else:
         print(f"[ i ] Saving model to {model_path}")
         save_model(model, model_path, parallel=GPUS_COUNT > 1)
+
+      if SAVE_BEST_VAL_LOSS and val_loss < best_val_loss:
+        best_val_loss = val_loss
+        best_model_path = model_dir + f'model-f{args.val_fold}-best.pth'
+        if args.ema:
+          print(f"[ i ] Saving BEST EMA model to {best_model_path}")
+          save_model(
+            ema_mod.inference_model(
+              model, ema_model, optimizer_global_step, args.ema, ema_warmup_steps),
+            best_model_path, parallel=GPUS_COUNT > 1)
+        else:
+          print(f"[ i ] Saving BEST model to {best_model_path}")
+          save_model(model, best_model_path, parallel=GPUS_COUNT > 1)
 
       torch.save(optimizer.state_dict(), model_dir + 'optimizer.pth')
       if not args.poly_lr_decay:
@@ -743,14 +785,15 @@ if __name__ == '__main__':
   # -----------------------------------------------
   # Final save
   # -----------------------------------------------
+  model_path = model_dir + f'model-f{args.val_fold}-final.pth'
   if args.ema:
-    print(f"[ i ] Saving EMA model to {model_path}")
+    print(f"[ i ] Saving final EMA model to {model_path}")
     save_model(
       ema_mod.inference_model(
         model, ema_model, optimizer_global_step, args.ema, ema_warmup_steps),
       model_path, parallel=GPUS_COUNT > 1)
   else:
-    print(f"[ i ] Saving model to {model_path}")
+    print(f"[ i ] Saving final model to {model_path}")
     save_model(model, model_path, parallel=GPUS_COUNT > 1)
 
   print(TAG)
