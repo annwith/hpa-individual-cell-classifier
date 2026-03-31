@@ -1,11 +1,12 @@
 import argparse
 import os
 
+from tqdm import tqdm
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
-from tqdm import tqdm
+from torchvision.transforms import Compose, ToTensor, Normalize
 
 import cv2
 cv2.setNumThreads(0)
@@ -14,7 +15,6 @@ import datasets
 from datasets.hpa import GetPredictionsDataset
 
 from core.networks import *
-from tools.ai.augment_utils import *
 from tools.ai.demo_utils import *
 from tools.ai.evaluate_utils import *
 from tools.ai.log_utils import *
@@ -35,6 +35,8 @@ parser.add_argument('--train_csv', required=True, type=str)
 parser.add_argument('--data_dir', required=True, type=str)
 parser.add_argument('--validate_batch_size', default=1, type=int)
 parser.add_argument('--image_size', default=256, type=int)
+parser.add_argument('--normalization_mean', default='0.485,0.456,0.406,0.485', type=str2floatlist)
+parser.add_argument('--normalization_std', default='0.229,0.224,0.225,0.229', type=str2floatlist)
 
 # Network
 parser.add_argument('--architecture', default='resnest50', type=str)
@@ -59,7 +61,6 @@ except KeyError:
   GPUS = "0"
 GPUS = GPUS.split(",")
 GPUS_COUNT = len(GPUS)
-THRESHOLDS = list(np.arange(0.10, 0.50, 0.05))
 
 
 def predict_model(
@@ -83,6 +84,13 @@ def predict_model(
 
             ipt = ipt.view(-1, ipt.shape[-3], ipt.shape[-2], ipt.shape[-1])
             lbl = lbl.view(-1, lbl.shape[-1])
+            image_lbl = image_lbl.view(-1, image_lbl.shape[-1])
+
+            # print("Image and cell labels:")
+            # print(type(image_lbl))
+            # print(image_lbl.shape)
+            # print(type(lbl))
+            # print(lbl.shape)
             
             if torch.cuda.is_available():
                 ipt, lbl = ipt.cuda(), lbl.cuda()
@@ -93,11 +101,14 @@ def predict_model(
               image_probs = torch.sigmoid(image_logits).cpu().numpy()
               cell_logits = cell_logits.cpu().numpy()
               image_logits = image_logits.cpu().numpy()
+              lbl = lbl.cpu().numpy()
+              image_lbl = image_lbl.cpu().numpy()
             
             # Add cell-level output
             for j in range(int(n_cell)):
                 results.append({
                     'filename': f'{filename}_{j+1}',
+                    **{f'label_{k}': lbl[j, k] for k in range(lbl.shape[1])},
                     **{f'logit_{k}': cell_logits[j, k] for k in range(cell_logits.shape[1])},
                     **{f'prob_{k}': cell_probs[j, k] for k in range(cell_probs.shape[1])},
                     'type': 'cell'
@@ -106,6 +117,7 @@ def predict_model(
             # Add image-level output
             results.append({
                 'filename': filename,
+                **{f'label_{k}': image_lbl[0, k] for k in range(image_lbl.shape[1])},
                 **{f'logit_{k}': image_logits[0, k] for k in range(image_logits.shape[1])},
                 **{f'prob_{k}': image_probs[0, k] for k in range(image_probs.shape[1])},
                 'type': 'image'
@@ -132,10 +144,23 @@ if __name__ == '__main__':
   # Dataset
   df = pd.read_csv(args.train_csv)
 
+  # Validation fold
+  # validation_fold = 0
+  # df = df[df['fold'] == validation_fold]
+
+  print(f"Mean: {args.normalization_mean}, type: {type(args.normalization_mean)}")
+  print(f"Std: {args.normalization_std}, type: {type(args.normalization_std)}")
+
+  base_tfms = Compose([
+    ToTensor(),  # Converts image to PyTorch tensor (C x H x W)
+    Normalize(mean=args.normalization_mean, 
+              std=args.normalization_std),  # Normalizes each channel
+  ])
+
   # Valitation dataset
   vs = GetPredictionsDataset(
     df=df,
-    tfms=None,
+    base_tfms=base_tfms,
     cell_path=args.data_dir,
     cell_size=args.image_size
   )
@@ -158,6 +183,7 @@ if __name__ == '__main__':
     trainable_stem=args.trainable_stem,
     trainable_backbone=args.trainable_backbone,
   )
+
   if args.model_restore:
     print(f"[ i ] Restoring weights from {args.model_restore}")
     model.load_state_dict(torch.load(args.model_restore), strict=True)
