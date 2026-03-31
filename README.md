@@ -125,4 +125,4 @@ The generated CSV contains both cell-level and image-level outputs, including fi
 ## Kaggle submission example
 
 A public Kaggle submission notebook is available here:
-[HPA CP Public Submission](https://www.kaggle.com/code/annwith/hpa-cp-public-submission)
+[HPA CP Public Submission](https://www.kaggle.com/code/julianamidlej/1-hpa-cp-public-submission)
