@@ -17,22 +17,22 @@
 #
 
 DEBUG=0
-WORK_DIR=/home/unicamp/200208/models/wsss-hpa
+WORK_DIR=/home/unicamp/200208/models/hpa-individual-cell-classifier
 
 ## environment region
 
 PY=python3
 PIP=pip
-WORKERS_TRAIN=10
+WORKERS_TRAIN=8
 DATASETS_DIR=/home/unicamp/200208/datasets
 
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 DEVICE='cuda:0'
 
 ## end region
 
 ## dataset region
-DATASET=hparanzer     # HPA Single Cell Classification
+DATASET=hpa2nd     # HPA Single Cell Classification
 TRAIN_CSV=$WORK_DIR/datasets/split/256_train+ext+rare.csv
 DATA_DIR=$DATASETS_DIR/input/train_cell_256
 IMAGE_SIZE=256
@@ -72,22 +72,24 @@ DILATED=false
 MODE=normal
 CELL_LOGITS_TO_IMAGE_LOGITS=false
 
-# PRETRAINED_WEIGHTS=./experiments/models/resnest269-0cc87c48.pth
+NORM_MEAN=0.485,0.456,0.406,0.485
+NORM_STD=0.229,0.224,0.225,0.229
+
 PRETRAINED_WEIGHTS=imagenet
 
 # Restore
-RESTORE_DIR=$WORK_DIR/experiments/models/ranzer
-MODEL_RESTORE=$RESTORE_DIR/hparanzer-256-rs50-lr0.0002-b6-ls0-aug2nd-adamw-eid2-c16/model-f0-e9.pth
+RESTORE_DIR=$WORK_DIR/experiments/models
+MODEL_RESTORE=$RESTORE_DIR/hpa2nd-rs50-lr0.0002-b6-aug2nd-adamw-eid-2nd-pw1-cp-fix-preds-2/model-f0-e9.pth
 
 # Save
-SAVE_FILE=$RESTORE_DIR/pred-hparanzer-256-rs50-lr0.0002-b6-ls0-aug2nd-adamw-eid2-c16-e9.csv
+SAVE_FILE=$RESTORE_DIR/pred-hpa2nd-rs50-lr0.0002-b6-aug2nd-adamw-eid-2nd-pw1-cp-fix-preds-2.csv
 
-predict_ranzer() {
+predict() {
   echo "=================================================================="
   echo "[predict $TAG] started at $(date +'%Y-%m-%d %H:%M:%S')."
   echo "=================================================================="
 
-    $PY scripts/hpa/predict_ranzer.py \
+    $PY scripts/hpa/predict.py \
     --device $DEVICE \
     --architecture $ARCHITECTURE \
     --dilated $DILATED \
@@ -104,6 +106,8 @@ predict_ranzer() {
     --num_workers $WORKERS_TRAIN \
     --debug $DEBUG \
     --model_restore "$MODEL_RESTORE" \
+    --normalization_mean $NORM_MEAN \
+    --normalization_std $NORM_STD \
     --save_file "$SAVE_FILE"
 
   echo "=================================================================="
@@ -113,6 +117,6 @@ predict_ranzer() {
 
 # region Predict RANZER
 
-predict_ranzer
+predict
 
 # endregion

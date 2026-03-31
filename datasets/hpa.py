@@ -241,20 +241,15 @@ class ConfAwareHPADataset(Dataset):
 
     
 class GetPredictionsDataset(Dataset):
-    def __init__(self, df, tfms=None, cell_path=None, cell_size=256):
+    def __init__(self, df, tfms=None, base_tfms=None, cell_path=None, cell_size=256):
         print('[ i ] GetPredictionsDataset')
 
         self.df = df.reset_index(drop=True)
         self.transform = tfms
-        self.tensor_tfms = Compose([
-            ToTensor(),
-            Normalize(mean=[0.485, 0.456, 0.406, 0.406], std=[0.229, 0.224, 0.225, 0.225]),
-        ])
+        self.base_tfms = base_tfms
         self.cell_path = cell_path
         self.cell_size = cell_size
         self.cols = ['class{}'.format(i) for i in range(19)]
-
-        print('self.cell_path: {}'.format(self.cell_path))
 
     def __len__(self):
         return len(self.df)
@@ -276,7 +271,8 @@ class GetPredictionsDataset(Dataset):
                 img = res['image']
             if not img.shape[0] == self.cell_size:
                 img = cv2.resize(img, (self.cell_size, self.cell_size))
-            img = self.tensor_tfms(img)
+
+            img = self.base_tfms(img)
             batch[idx, :, :, :] = img
             mask[idx] = 1
             label[idx] = row[self.cols].values.astype(np.float64)
