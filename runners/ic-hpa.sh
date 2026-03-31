@@ -16,17 +16,19 @@
 # Train a model to perform multilabel classification over a WSSS dataset.
 #
 
-DEBUG=1
+DEBUG=0
 PRINT_RATIO=0.1
 MONITOR_MEMORY_USAGE=true
-WORK_DIR=/home/jumidlej/git-projects/hpa-individual-cell-classifier
+#WORK_DIR=/home/jumidlej/git-projects/hpa-individual-cell-classifier
+WORK_DIR=/home/unicamp/200208/models/hpa-individual-cell-classifier
 
 ## environment region
 
 PY=python3
 PIP=pip
 WORKERS_TRAIN=8
-DATASETS_DIR=/home/jumidlej/datasets
+#DATASETS_DIR=/home/jumidlej/datasets
+DATASETS_DIR=/home/unicamp/200208/datasets
 
 export CUDA_VISIBLE_DEVICES=0
 DEVICE='cuda:0'
@@ -42,11 +44,11 @@ VAL_FOLD=0
 
 IMAGE_SIZE=256
 
-CELL_COUNT=16
-SAMPLER=balanced-class
+# CELL_COUNT=16
+# SAMPLER=default
 
-# CELL_COUNT=-1
-# SAMPLER=balanced_cell_count
+CELL_COUNT=-1
+SAMPLER=balanced_cell_count
 
 # end region
 
@@ -95,9 +97,11 @@ IS_DINO_MODEL=false
 # IS_DINO_MODEL=false
 
 # Confidences
-IMAGE_CONF_AWARE_TRAINING=false
-CELL_CONF_AWARE_TRAINING=false
-CONF_PREDS=no
+IMAGE_CONF_AWARE_TRAINING=true
+CELL_CONF_AWARE_TRAINING=true
+# CONF_PREDS=/home/unicamp/200208/models/hpa-individual-cell-classifier/experiments/models/pred-hpa2nd-rs50-lr0.0002-b6-aug2nd-adamw-eid-2nd-1-normalized.csv
+# CONF_PREDS=/home/unicamp/200208/models/hpa-individual-cell-classifier/experiments/models/pred-hpa2nd-rs50-lr0.0002-b6-aug2nd-adamw-eid-2nd-pw10-1-try-2-normalized.csv
+CONF_PREDS=/home/unicamp/200208/models/hpa-individual-cell-classifier/experiments/models/pred-hpa2nd-rs50-lr0.0002-b3-aug2nd-adamw-eid-all-cells-2-normalized.csv
 CONF_ALPHA=1.0
 CONF_GAMMA=0.5
 
@@ -110,24 +114,24 @@ CELL_CONF_AS_CELL_LABELS=false
 OPTIMIZER=adamw  # sgd,lion,lamb
 POLY_LR_DECAY_OPTIMIZER=false
 LR=0.0002
-LR_ALPHA_SCRATCH=1.0
-LR_ALPHA_BIAS=1.0
-WD=0.0
+LR_ALPHA_SCRATCH=1
+LR_ALPHA_BIAS=1
+WD=0
 
 # SupCon parameters
-IS_SUPCONCLASSIFIER_MODEL=true
+IS_SUPCONCLASSIFIER_MODEL=false
 BCE_LOSS_WEIGHT=1.0
 SUPCON_LOSS_WEIGHT=1.0
 SUPCON_TEMPERATURE=0.07
 SUPCON_ALPHA=0.8
 SUPCON_USE_HARD_MASK=true
 PROJECTION_DIM=128
-HIDDEN_DIM=2048
+HIDDEN_DIM=256
 
 WARMUP_EPOCHS=1
 WARMUP_START_FACTOR=0.01
 
-LABELSMOOTHING=0.1
+LABELSMOOTHING=0
 
 # OPTIMIZER=momentum
 # LR=0.01
@@ -139,17 +143,17 @@ LABELSMOOTHING=0.1
 # LR=0.0001
 # WD=0.01
 
-EPOCHS=5
+EPOCHS=10
 EPOCH0=0
-BATCH=4
+BATCH=3
 EVAL_BATCH=1
-ACCUMULATE_STEPS=6
+ACCUMULATE_STEPS=8
 
 CLASS_WEIGHT=none
-CELL_POS_WEIGHT=0.1
-CELL_LOSS_WEIGHT=0
+CELL_POS_WEIGHT=1
+CELL_LOSS_WEIGHT=0.1
 
-EMA_ENABLED=true
+EMA_ENABLED=false
 EMA_WARMUP=1
 EMA_STEPS=1
 EMA_DECAY=0.99
@@ -265,7 +269,7 @@ train() {
 
 # region Classification Experiments
 
-EID=-teste # Experiment ID
+EID=-2nd-pw1-cp-fix-preds-3 # Experiment ID
 TAG=$DATASET-${ARCH}-lr${LR}-b${BATCH}-$AUG-$OPTIMIZER-eid$EID
 
 train
