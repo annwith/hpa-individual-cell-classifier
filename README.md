@@ -1,6 +1,22 @@
 # hpa-individual-cell-classifier
 
-Training and inference code for individual cell classification on the Human Protein Atlas (HPA) single-cell setting. Based on the second placed solution of this Kaggle competition.
+Training and inference code for individual cell classification on the Human Protein Atlas (HPA) single-cell setting. This repository is based on the second-place solution of the Kaggle HPA Single Cell Classification competition: [HPA-singlecell-2nd-dual-head-pipeline](https://github.com/iseekwonderful/HPA-singlecell-2nd-dual-head-pipeline).
+
+## About this repository
+
+This repository contains code used in the dissertation "Classificação Fracamente Supervisionada da Localização Subcelular de Proteínas". In the dissertation, this code was used for experiments involving individual-cell classification in the Human Protein Atlas (HPA) setting, including experiments with conformal prediction.
+
+The model weights used in the dissertation with this repository are available in [Google Drive](https://drive.google.com/drive/folders/1RU8gWto2Par0Ll3BlPtvH3NKfVAUTAcm?usp=drive_link). In particular:
+
+* ConformalPrediction/: weights used in the dissertation experiments involving conformal prediction;
+
+The weights obtained from the reproduction of the second-place solution [HPA-singlecell-2nd-dual-head-pipeline](https://github.com/iseekwonderful/HPA-singlecell-2nd-dual-head-pipeline) and used in the dissertation are also available:
+
+* HPA2ndPlace/: weights obtained from the reproduction of the second-place Kaggle solution;
+
+* HPA2ndPlacePretainedWeights/: pretrained weights used to initialize the architectures from the reproduced second-place solution.
+
+These files are not stored directly in the GitHub repository due to their size.
 
 ## Repository structure
 
